@@ -8,7 +8,7 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "DATABASE_URL",
-        "mysql+pymysql://root:1234@127.0.0.1:3306/smart_home?charset=utf8mb4",
+        "mysql+pymysql://root:1234@101.132.119.124:3306/smart_home?charset=utf8mb4",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -17,7 +17,7 @@ class Config:
     JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
     # ============ MQTT ============
-    MQTT_HOST = os.getenv("EMQX_HOST", "127.0.0.1")
+    MQTT_HOST = os.getenv("EMQX_HOST", "101.132.119.124")
     MQTT_PORT = int(os.getenv("EMQX_PORT", "1883"))
     MQTT_USERNAME = os.getenv("EMQX_USERNAME", "")
     MQTT_PASSWORD = os.getenv("EMQX_PASSWORD", "")

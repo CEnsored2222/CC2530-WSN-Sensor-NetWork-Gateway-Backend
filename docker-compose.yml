@@ -1,0 +1,102 @@
+# ============================================================
+# Smart Home IoT 一键部署
+# 用法:
+#   1. cp .env.example .env  并修改其中的密码
+#   2. docker compose up -d --build
+#   3. 浏览器访问 http://服务器IP
+# ============================================================
+name: smart-home
+
+services:
+  # ---------- 数据库 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: sh-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root1234}
+      MYSQL_DATABASE: smart_home
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------- MQTT Broker ----------
+  emqx:
+    image: emqx/emqx:5.6
+    container_name: sh-emqx
+    restart: unless-stopped
+    environment:
+      EMQX_NAME: emqx
+      EMQX_HOST: emqx
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASS:-public}
+    ports:
+      - "${EMQX_MQTT_PORT:-1883}:1883"     # MQTT
+      - "${EMQX_WS_PORT:-8083}:8083"       # MQTT over WS
+      - "${EMQX_DASHBOARD_PORT:-18083}:18083"  # 管理面板
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+
+  # ---------- 后端 ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: sh-backend:latest
+    container_name: sh-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      emqx:
+        condition: service_started
+    environment:
+      # 数据库
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-root123}@mysql:3306/smart_home?charset=utf8mb4
+      # MQTT
+      EMQX_HOST: emqx
+      EMQX_PORT: 1883
+      EMQX_USERNAME: ${EMQX_USERNAME:-}
+      EMQX_PASSWORD: ${EMQX_PASSWORD:-}
+      # 安全配置(生产请修改)
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-prod}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      JWT_EXPIRE_HOURS: "24"
+      # 初始化管理员
+      SEED_ADMIN: "true"
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      TZ: Asia/Shanghai
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+
+  # ---------- 前端 (Nginx) ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: sh-frontend:latest
+    container_name: sh-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-80}:80"
+
+volumes:
+  mysql_data:
+  emqx_data:
+  emqx_log:

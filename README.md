@@ -49,6 +49,55 @@
 
 ## 快速开始
 
+### 方式一：Docker 一键部署（推荐，Linux 服务器）
+
+> 适合服务器部署，一条命令拉起 MySQL + EMQX + 后端 + 前端全部服务。
+
+**环境要求**：已安装 `Docker` 和 `Docker Compose v2+`。
+
+```bash
+# 1. 克隆代码
+git clone <repo-url> smart-home && cd smart-home
+
+# 2. 复制环境变量并修改密码（强烈建议修改默认值）
+cp .env.example .env
+vim .env
+
+# 3. 一键构建并启动
+docker compose up -d --build
+
+# 4. 查看运行状态
+docker compose ps
+docker compose logs -f backend
+```
+
+启动完成后：
+
+| 服务 | 访问地址 | 说明 |
+|------|----------|------|
+| 前端 | http://服务器IP/ | 浏览器访问 |
+| 后端 API | http://服务器IP:5000/api/health | 健康检查 |
+| EMQX Dashboard | http://服务器IP:18083 | 默认 admin / public |
+| MySQL | 服务器IP:3306 | 默认 root / root123 |
+
+数据库会在 MySQL 容器首次启动时自动执行 [backend/init_db.sql](backend/init_db.sql) 完成建表与默认数据初始化。
+
+常用运维命令：
+
+```bash
+docker compose down              # 停止并删除容器(保留数据)
+docker compose down -v           # 停止并清空所有数据卷(慎用)
+docker compose restart backend   # 重启后端
+docker compose logs -f frontend  # 查看某服务日志
+docker compose up -d --build     # 代码更新后重新构建
+```
+
+> 网关（gateway）需要本地串口硬件，**不参与 Docker 部署**，请在具备硬件的设备上单独运行。
+
+---
+
+### 方式二：本地开发部署
+
 ### 环境要求
 
 - Python 3.9+
