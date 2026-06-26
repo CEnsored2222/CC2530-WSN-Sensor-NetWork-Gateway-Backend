@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""导入所有模型,确保 db.create_all() 时建表。"""
+"""导入所有模型,确保 SQLAlchemy 能发现模型元数据。"""
 from models.user import User
 from models.gateway import Gateway
 from models.device import Device

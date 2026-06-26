@@ -47,7 +47,10 @@ def bind_device(did):
         return jsonify({"error": "设备不存在"}), 404
     data = request.get_json(silent=True) or {}
     dev.name = data.get("name", dev.name)
-    dev.type = data.get("type", dev.type)
+    # type 现在是 JSON 数组,如 ["temperature","humidity"];允许手动覆盖
+    if "type" in data:
+        t = data["type"]
+        dev.type = t if isinstance(t, list) else dev.type
     dev.bound = True
     db.session.commit()
     db.session.add(OperationLog(

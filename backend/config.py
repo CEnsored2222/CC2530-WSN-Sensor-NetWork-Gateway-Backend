@@ -29,7 +29,6 @@ class Config:
     MAC_TIMEOUT_SECONDS = 5          # 设备离线判定(秒)
 
     # ============ 启动行为 ============
-    CREATE_TABLES_ON_START = os.getenv("CREATE_TABLES", "true").lower() == "true"
     SEED_ADMIN = os.getenv("SEED_ADMIN", "true").lower() == "true"
     ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")

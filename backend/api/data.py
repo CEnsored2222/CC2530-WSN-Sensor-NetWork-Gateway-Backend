@@ -2,6 +2,7 @@
 """数据接口:实时监控/历史曲线/总览统计"""
 from datetime import datetime
 
+import extensions
 from flask import Blueprint, g, jsonify, request
 
 from extensions import db
@@ -18,21 +19,50 @@ _VALID_METRICS = ("temperature", "humidity", "light")
 @bp.get("/data/realtime")
 @jwt_required
 def realtime():
-    """首页实时监控:每个已绑定设备 + 最新一条数据"""
+    """首页实时监控:每个已绑定设备 + 最新数据。
+
+    采集字段(温度/湿度/光照)优先取 data_buffer 实时缓冲,缓冲为空时回退数据库历史表;
+    状态字段(led_status/device_status)仅从 data_buffer 取(不入库,由 MQTT led/status
+    主题订阅直推)。保证与设备管理页面的状态数据源完全一致。
+    """
     gw_ids = [gw.id for gw in Gateway.query.filter_by(user_id=g.current_user.id).all()]
     if not gw_ids:
         return jsonify({"devices": []})
     devs = Device.query.filter(Device.gateway_id.in_(gw_ids)).all()
     result = []
     for dev in devs:
-        latest = (
+        buf = extensions.data_buffer.get_latest(dev.id)
+        latest_db = (
             SensorData.query.filter_by(device_id=dev.id)
             .order_by(SensorData.recorded_at.desc())
             .first()
         )
+        # 采集字段:buffer 优先,回退数据库
+        temp = buf.get("temperature")
+        hum = buf.get("humidity")
+        light = buf.get("light")
+        if temp is None and hum is None and light is None and latest_db:
+            temp = float(latest_db.temperature) if latest_db.temperature is not None else None
+            hum = float(latest_db.humidity) if latest_db.humidity is not None else None
+            light = latest_db.light
+            recorded_at = latest_db.recorded_at.strftime("%Y-%m-%d %H:%M:%S") if latest_db.recorded_at else None
+        else:
+            ts = buf.get("_ts")
+            recorded_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else None
+
+        latest = {
+            "device_id": dev.id,
+            "temperature": temp,
+            "humidity": hum,
+            "light": light,
+            # 状态字段仅来自 buffer(不入库,由 led/status 主题直推)
+            "led_status": buf.get("led_status"),
+            "device_status": buf.get("device_status"),
+            "recorded_at": recorded_at,
+        }
         result.append({
             "device": dev.to_dict(),
-            "latest": latest.to_dict() if latest else None,
+            "latest": latest,
         })
     return jsonify({"devices": result})
 

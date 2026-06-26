@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 """设备 MAC 列表维护。
-本地网关维护一个 MAC 列表:新 MAC 加入时发布 active,
-某设备 10s 内未发数据则从列表剔除并发布 sleep。"""
+本地网关维护一个 MAC 列表,用于判断设备状态:
+- 新 MAC 加入时由调用方发布 active
+- 某设备 MAC_TIMEOUT_SECONDS(默认 5s)内未发数据则从列表剔除并触发 on_remove 回调
+  (由调用方发布 sleep)
+
+设备状态判断两种方式(均在本地网关完成):
+1. 新 MAC 出现 + 5s 内无新数据 → sleep
+2. 收到控制指令成功执行的反馈 → 改变状态(由 serial_reader 处理)
+"""
 import threading
 import time
 
@@ -30,6 +37,13 @@ class MacRegistry:
         with self._lock:
             if mac in self._macs:
                 self._macs[mac] = time.time()
+
+    def force_remove(self, mac: str):
+        """主动移除 MAC(不触发 on_remove 回调)。
+        用于设备主动休眠:避免 5s 超时后再触发一次 sleep 发布。
+        """
+        with self._lock:
+            self._macs.pop(mac, None)
 
     def contains(self, mac: str) -> bool:
         with self._lock:

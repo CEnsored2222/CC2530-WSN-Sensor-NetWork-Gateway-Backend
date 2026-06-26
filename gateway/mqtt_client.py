@@ -182,9 +182,9 @@ class GatewayMqttClient:
         self._publish(self._gw_topic("register"), payload, qos=1, retain=False)
         print("[MQTT] 已发布注册请求,等待后端审批...")
 
-    def publish_discovery(self, dev_mac, dev_type="sensor"):
+    def publish_discovery(self, dev_mac):
         self._publish(self._dev_topic(dev_mac, "discovery"),
-                      {"dev_mac": dev_mac, "type": dev_type, "ts": _now()},
+                      {"dev_mac": dev_mac, "ts": _now()},
                       qos=1, retain=True)
         print(f"[MQTT] 发布设备发现 {dev_mac}")
 
@@ -202,12 +202,12 @@ class GatewayMqttClient:
 
     def publish_status(self, dev_mac, status_str):
         # status_str: "active" 或 "sleep"
+        # 设备状态统一由本地网关通过 status 主题上报
+        # 触发来源:
+        #   1. 新 MAC 出现 → active(serial_reader._on_new_mac)
+        #   2. 5s 内无新数据 → sleep(mac_registry 超时回调)
+        #   3. STATUS 控制指令成功反馈 → active/sleep(serial_reader._handle_feedback)
         self._publish_dev(dev_mac, "device_status", "status", status_str)
-
-    def publish_feedback(self, dev_mac, cmd, result):
-        self._publish(self._dev_topic(dev_mac, "feedback"),
-                      {"cmd": cmd, "result": result, "ts": _now()},
-                      qos=0, retain=False)
 
     def publish_heartbeat(self):
         self._publish(self._gw_topic("heartbeat"),

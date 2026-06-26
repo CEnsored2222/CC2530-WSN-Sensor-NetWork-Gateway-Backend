@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { listLogs, listActions } from '@/api/log'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { listLogs, listActions, deleteLog, deleteLogsBatch } from '@/api/log'
 
 const loading = ref(false)
 const items = ref([])
@@ -11,6 +12,9 @@ const form = reactive({
   page: 1,
   size: 20
 })
+// 多选:选中的日志 id 集合
+const selected = ref(new Set())
+const deleting = ref(false)
 
 // action 中文标签与归类色映射
 const ACTION_META = {
@@ -37,8 +41,75 @@ async function load() {
     const res = await listLogs(params)
     items.value = res.items || []
     total.value = res.total || 0
+    // 重新加载后清空选择
+    selected.value = new Set()
   } finally {
     loading.value = false
+  }
+}
+
+// ----- 选择 -----
+function toggleSelect(id) {
+  const s = new Set(selected.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  selected.value = s
+}
+function selectAll() {
+  // 全选当前页
+  selected.value = new Set(items.value.map((i) => i.id))
+}
+function clearSelection() {
+  selected.value = new Set()
+}
+const allSelected = computed(
+  () => items.value.length > 0 && items.value.every((i) => selected.value.has(i.id))
+)
+const someSelected = computed(() => selected.value.size > 0 && !allSelected.value)
+function toggleAll() {
+  if (allSelected.value) clearSelection()
+  else selectAll()
+}
+
+// ----- 删除 -----
+async function onDelete(log) {
+  try {
+    await ElMessageBox.confirm(`确定删除该条日志 #${log.id} 吗?`, '删除日志', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    })
+  } catch {
+    return
+  }
+  deleting.value = true
+  try {
+    await deleteLog(log.id)
+    ElMessage.success('日志已删除')
+    // 若删除后当前页空了,回退一页
+    if (items.value.length === 1 && form.page > 1) form.page--
+    await load()
+  } catch (e) {} finally {
+    deleting.value = false
+  }
+}
+
+async function onDeleteBatch() {
+  const ids = Array.from(selected.value)
+  if (!ids.length) return
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${ids.length} 条日志吗?`, '批量删除', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+    })
+  } catch {
+    return
+  }
+  deleting.value = true
+  try {
+    const res = await deleteLogsBatch(ids)
+    ElMessage.success(`已删除 ${res.deleted || ids.length} 条日志`)
+    if (items.value.length === ids.length && form.page > 1) form.page--
+    await load()
+  } catch (e) {} finally {
+    deleting.value = false
   }
 }
 
@@ -124,6 +195,22 @@ onMounted(() => {
         </select>
       </div>
       <button v-if="form.action" class="filter-clear" @click="form.action = ''; onFilter()">清除筛选</button>
+
+      <div class="filter-spacer"></div>
+
+      <!-- 批量操作区 -->
+      <div class="batch-bar" :class="{ active: someSelected || allSelected }">
+        <label class="batch-check" @click.prevent="toggleAll">
+          <span class="cb" :class="{ checked: allSelected, indeterminate: someSelected }"></span>
+          <span class="batch-label">{{ allSelected ? '取消全选' : '全选本页' }}</span>
+        </label>
+        <span class="batch-count mono" v-if="selected.size">已选 {{ selected.size }}</span>
+        <button
+          class="batch-del"
+          :disabled="!selected.size || deleting"
+          @click="onDeleteBatch"
+        >批量删除</button>
+      </div>
     </section>
 
     <!-- 时间线列表 -->
@@ -132,9 +219,14 @@ onMounted(() => {
         v-for="(log, i) in items"
         :key="log.id"
         class="log-row rise"
-        :class="`tint-${metaOf(log.action).tint}`"
+        :class="[`tint-${metaOf(log.action).tint}`, { selected: selected.has(log.id) }]"
         :style="{ animationDelay: 0.05 + i * 0.04 + 's' }"
       >
+        <!-- 行选择框 -->
+        <label class="log-check" @click.prevent="toggleSelect(log.id)">
+          <span class="cb" :class="{ checked: selected.has(log.id) }"></span>
+        </label>
+
         <div class="log-rail">
           <div class="log-node">{{ metaOf(log.action).icon }}</div>
           <div class="log-line" v-if="i < items.length - 1"></div>
@@ -163,7 +255,15 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="log-id mono">#{{ log.id }}</div>
+        <div class="log-tail">
+          <div class="log-id mono">#{{ log.id }}</div>
+          <button
+            class="log-del"
+            :disabled="deleting"
+            @click="onDelete(log)"
+            title="删除该日志"
+          >删除</button>
+        </div>
       </article>
 
       <div v-if="!loading && !items.length" class="empty">
@@ -253,11 +353,18 @@ onMounted(() => {
 .timeline { display: flex; flex-direction: column; }
 .log-row {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
-  gap: 18px;
+  grid-template-columns: 24px 40px 1fr auto;
+  gap: 16px;
   padding: 18px 4px 18px 0;
   border-bottom: 1px solid var(--line);
   position: relative;
+  transition: background 0.2s var(--ease);
+}
+.log-row.selected {
+  background: var(--sage-tint);
+}
+.log-row:hover .log-del {
+  opacity: 1;
 }
 .log-rail {
   position: relative;
@@ -358,12 +465,136 @@ onMounted(() => {
 .log-time { color: var(--ink-3); }
 .log-ip { color: var(--ink-4); margin-left: auto; }
 
+.log-tail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding-top: 6px;
+}
 .log-id {
   font-size: 10px;
   color: var(--ink-5);
   letter-spacing: 0.04em;
-  align-self: flex-start;
-  padding-top: 6px;
+}
+.log-del {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-4);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s var(--ease);
+}
+.log-del:hover:not(:disabled) {
+  border-color: var(--terra);
+  color: var(--terra);
+  background: rgba(239, 107, 126, 0.06);
+  opacity: 1;
+}
+.log-del:disabled { cursor: not-allowed; opacity: 0.4; }
+
+/* —— 行选择框 —— */
+.log-check {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 8px;
+  cursor: pointer;
+}
+.cb {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid var(--line-strong);
+  background: var(--paper);
+  display: inline-block;
+  position: relative;
+  transition: all 0.2s var(--ease);
+  flex-shrink: 0;
+}
+.cb.checked {
+  background: var(--sage);
+  border-color: var(--sage);
+}
+.cb.checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid #06141a;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.cb.indeterminate {
+  background: var(--sage);
+  border-color: var(--sage);
+}
+.cb.indeterminate::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  width: 8px;
+  height: 2px;
+  background: #06141a;
+  border-radius: 1px;
+}
+
+/* —— 批量操作栏 —— */
+.filter-spacer { flex: 1; }
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+  opacity: 0.55;
+  transition: opacity 0.2s var(--ease);
+}
+.batch-bar.active { opacity: 1; }
+.batch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.batch-label {
+  font-size: 12px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.batch-count {
+  font-size: 11px;
+  color: var(--sage-deep);
+  background: var(--sage-soft);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.batch-del {
+  border: 1px solid var(--terra);
+  background: transparent;
+  color: var(--terra);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.batch-del:hover:not(:disabled) {
+  background: var(--terra);
+  color: #fff;
+}
+.batch-del:disabled {
+  border-color: var(--line-strong);
+  color: var(--ink-5);
+  cursor: not-allowed;
 }
 
 /* hover 微反馈 */

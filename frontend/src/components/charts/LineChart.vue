@@ -63,6 +63,11 @@ function buildYAxis(c) {
 function baseOption() {
   const c = themeColors()
   return {
+    // 关闭动画:实时数据场景每次 setOption 不再播放从左到右入场动画,杜绝闪烁
+    animation: false,
+    // 过渡动画时长也置零,即使个别属性触发动画也瞬间完成
+    animationDuration: 0,
+    animationEasing: 'linear',
     grid: { top: 24, left: 8, right: props.dual ? 50 : 14, bottom: 8, containLabel: true },
     tooltip: {
       trigger: 'axis',
@@ -105,8 +110,21 @@ function baseOption() {
   }
 }
 
-function buildSeriesOption(s) {
-  return {
+// 节流:用 requestAnimationFrame 合并同一帧内的多次 render 调用
+// 避免高频 WS 推送每条都触发 setOption
+let rafId = null
+function scheduleRender() {
+  if (rafId) return  // 已有挂起的渲染,跳过
+  rafId = requestAnimationFrame(() => {
+    rafId = null
+    doRender()
+  })
+}
+
+function doRender() {
+  if (!chart) return
+  const opt = baseOption()
+  opt.series = props.series.map((s) => ({
     name: s.name,
     type: 'line',
     smooth: true,
@@ -122,63 +140,23 @@ function buildSeriesOption(s) {
         { offset: 1, color: s.color + '00' }
       ])
     },
-    // 数据点按时间戳排序,避免乱序导致线条回跳
+    // 数据按时间戳排序(避免乱序导致线条回跳)
     data: (s.data || []).slice().sort((a, b) => a[0] - b[0])
-  }
+  }))
+  // 关键:普通 merge 模式(setOption 第二参数 false)
+  // ECharts 会按 series.name 智能匹配新旧 series,只增量更新 data,不触发重绘
+  // 不使用 replaceMerge: ['series'](那会强制替换整个 series 数组导致重绘)
+  chart.setOption(opt, false)
 }
 
-// 已渲染 series 的 name → 索引映射,用于增量更新
-let renderedNames = new Set()
-
+// 对外仍叫 render,但内部走节流
 function render() {
-  if (!chart) return
-  const incoming = props.series || []
-  const incomingNames = new Set(incoming.map((s) => s.name))
-
-  // 1) 移除已不存在的 series(通过 name 比对)
-  const toRemove = [...renderedNames].filter((n) => !incomingNames.has(n))
-  if (toRemove.length) {
-    chart.setOption({
-      series: toRemove.map((n) => ({ name: n, data: [] }))
-    }, false)
-  }
-
-  // 2) 增量更新:对每个 series 只设置 data,不重建样式配置
-  //    ECharts 会按 name 匹配并复用已有 series 实例,只刷新 data
-  const seriesOpt = incoming.map((s) => {
-    // 已存在的 series → 只提供 data(避免重建 lineStyle/areaStyle 触发重绘)
-    if (renderedNames.has(s.name)) {
-      return {
-        name: s.name,
-        data: (s.data || []).slice().sort((a, b) => a[0] - b[0])
-      }
-    }
-    // 新 series → 完整配置
-    return buildSeriesOption(s)
-  })
-
-  // notMerge=false + lazyUpdate=true:延迟到下一帧合并更新,避免连续 setOption 抖动
-  chart.setOption({ series: seriesOpt }, { notMerge: false, lazyUpdate: true })
-
-  // 3) 同步基础配置(坐标轴等,仅在首次或主题变更时执行)
-  if (renderedNames.size === 0 || toRemove.length > 0) {
-    const base = baseOption()
-    // 不覆盖 series(已增量更新),仅同步 axis/tooltip/grid
-    delete base.series
-    chart.setOption(base, false)
-  }
-
-  renderedNames = incomingNames
+  scheduleRender()
 }
 
 function resize() { chart && chart.resize() }
 
-function onThemeChange() {
-  // 主题变更:重置缓存,强制下次 render 重新下发完整配置
-  renderedNames = new Set()
-  if (chart) chart.clear()
-  render()
-}
+function onThemeChange() { render() }
 
 onMounted(() => {
   chart = echarts.init(el.value)
@@ -187,19 +165,17 @@ onMounted(() => {
   window.addEventListener('theme-change', onThemeChange)
 })
 onBeforeUnmount(() => {
+  if (rafId) {
+    cancelAnimationFrame(rafId)
+    rafId = null
+  }
   window.removeEventListener('resize', resize)
   window.removeEventListener('theme-change', onThemeChange)
   chart && chart.dispose()
   chart = null
-  renderedNames = new Set()
 })
 watch(() => props.series, render, { deep: true })
-watch(() => props.dual, () => {
-  // dual 切换:Y 轴结构变化,需重置缓存以重建坐标系
-  renderedNames = new Set()
-  if (chart) chart.clear()
-  render()
-})
+watch(() => props.dual, render)
 </script>
 
 <template>

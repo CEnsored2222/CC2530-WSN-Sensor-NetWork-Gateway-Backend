@@ -26,6 +26,24 @@ const METRICS = [
 ]
 const metricMeta = computed(() => METRICS.find((m) => m.value === form.metric))
 
+// 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
+// 直接从中提取指标列表
+const METRIC_LABELS = {
+  temperature: '温度', humidity: '湿度', light: '光照',
+}
+function devMetrics(dev) {
+  const t = dev?.type
+  if (Array.isArray(t) && t.length) return t
+  return ['temperature', 'humidity', 'light']  // 无 type 时显示全部
+}
+
+// 当前选中设备可选的指标列表
+const availableMetrics = computed(() => {
+  const dev = allDevices.value.find((d) => d.id === form.device_id)
+  const allow = dev ? devMetrics(dev) : ['temperature', 'humidity', 'light']
+  return METRICS.filter((m) => allow.includes(m.value))
+})
+
 const chartSeries = computed(() => {
   if (!records.value.length) return []
   return [
@@ -77,6 +95,15 @@ async function query() {
   }
 }
 
+// 切换设备时自动匹配指标并查询
+function onDeviceChange() {
+  const devMetrics2 = devMetrics(allDevices.value.find((d) => d.id === form.device_id))
+  if (!devMetrics2.includes(form.metric)) {
+    form.metric = devMetrics2[0] || 'temperature'
+  }
+  query()
+}
+
 function exportCsv() {
   if (!records.value.length) return
   const rows = [['time', form.metric], ...records.value.map((r) => [r.t, r.v])]
@@ -110,7 +137,7 @@ onMounted(async () => {
       <div class="panel-form">
         <div class="f-item">
           <label class="label-eyebrow">设备</label>
-          <el-select v-model="form.device_id" placeholder="选择设备" filterable @change="query">
+          <el-select v-model="form.device_id" placeholder="选择设备" filterable @change="onDeviceChange">
             <el-option
               v-for="d in allDevices"
               :key="d.id"
@@ -122,7 +149,7 @@ onMounted(async () => {
         <div class="f-item">
           <label class="label-eyebrow">指标</label>
           <el-select v-model="form.metric" @change="query">
-            <el-option v-for="m in METRICS" :key="m.value" :label="m.label" :value="m.value" />
+            <el-option v-for="m in availableMetrics" :key="m.value" :label="m.label" :value="m.value" />
           </el-select>
         </div>
         <div class="f-item grow">

@@ -137,11 +137,11 @@ a:hover { color: var(--sage-deep); }
 .muted   { color: var(--ink-3); }
 .label-eyebrow {
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  font-size: 11px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--ink-4);
-  font-weight: 400;
+  color: var(--ink-3);
+  font-weight: 500;
 }
 
 /* —— 入场动画 —— */
@@ -159,14 +159,16 @@ a:hover { color: var(--sage-deep); }
 .rise-5 { animation-delay: 0.36s; }
 .rise-6 { animation-delay: 0.44s; }
 
-/* 滚动条 */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: var(--line-strong);
-  border-radius: 4px;
+/* 滚动条:全局隐藏(仍可滚动,仅去掉可见指示器) */
+* {
+  scrollbar-width: none;           /* Firefox */
+  -ms-overflow-style: none;        /* IE/Edge */
 }
-::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;                   /* Chrome/Safari/Edge */
+}
 
 /* ============================================================
    Element Plus 覆写

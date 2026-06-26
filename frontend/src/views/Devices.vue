@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listGateways, listPending, approve, reject, unbind } from '@/api/gateway'
 import { listDevices, bindDevice, deviceStream, sendCmd } from '@/api/device'
@@ -115,24 +115,98 @@ async function openStream(dev) {
   }
 }
 
+// ============ 状态判断(与 Home.vue 保持一致)============
+// device_status 由网关 status 主题推送:字符串 "active"/"sleep"
+// led_status 由网关 led 主题推送:布尔 true/false 或 1/0
+// 注意:不能用 !!device_status(因 !!"sleep" === true 会导致休眠误判为运行)
+
+// ============ 设备类型展示 ============
+const METRIC_LABELS = { temperature: '温度', humidity: '湿度', light: '光照' }
+function typeLabel(typeArr) {
+  if (!Array.isArray(typeArr) || !typeArr.length) return null
+  return typeArr.map((k) => METRIC_LABELS[k] || k).join('/')
+}
+function isDeviceActive(status) {
+  return status === 'active' || status === 1 || status === '1'
+}
+function isLedOn(status) {
+  return status === true || status === 1 || status === '1' || status === 'true'
+}
+
+// ============ 控制指令:状态驱动 + 3s 超时 + 防抖 ============
+// 设计(指令反馈由本地网关解析,前端不再订阅 cmd_feedback):
+// - dev.led_status / dev.device_status 为「真实状态」,只由 sensor_data 推送更新
+// - 点击按钮 → 进入 pending 态,显示 loading,按钮锁定
+// - pending 期间监听 sensor_data:对应字段变为「目标值」→ 指令成功,清除 pending
+// - 3s 内状态未变为目标值 → 视为失败,ElMessage.error 提示 + 清除 pending(状态自动回滚为原值)
+// - 防抖:pending 中点击直接忽略;同一按钮 500ms 内重复点击忽略
+
+// pending 状态:key = `${devId}:${cmd}`,value = { target, origin, timer }
+const pendingCmds = reactive({})
+// 最近点击时间戳:防止双击
+const lastClickTs = reactive({})
+const CLICK_DEBOUNCE_MS = 500
+const FEEDBACK_TIMEOUT_MS = 3000  // 3s 内状态未改变即失败
+
+function _pendingKey(devId, cmd) {
+  return `${devId}:${cmd}`
+}
+
+// 按钮 UI 是否处于 pending 态(显示 loading)
+function isPending(dev, cmd) {
+  return !!pendingCmds[_pendingKey(dev.id, cmd)]
+}
+
 async function cmd(dev, c, value) {
+  // 1. 防抖:同一按钮 500ms 内重复点击忽略
+  const clickKey = _pendingKey(dev.id, c)
+  const now = Date.now()
+  const lastClick = lastClickTs[clickKey] || 0
+  if (now - lastClick < CLICK_DEBOUNCE_MS) {
+    return
+  }
+  lastClickTs[clickKey] = now
+
+  // 2. pending 中点击忽略
+  if (pendingCmds[clickKey]) {
+    return
+  }
+
+  // 3. 记录目标值与原值,标记 pending,发送指令
+  //    成功判断:3s 内 sensor_data 推送的对应字段等于 target → 成功
+  //    失败判断:3s 超时 → 失败提示(状态未变,自动回滚为 origin)
+  const origin = c === 'LED' ? (isLedOn(dev.led_status) ? 1 : 0)
+                              : (isDeviceActive(dev.device_status) ? 1 : 0)
+  pendingCmds[clickKey] = {
+    target: value,
+    origin,
+    timer: setTimeout(() => {
+      if (pendingCmds[clickKey]) {
+        delete pendingCmds[clickKey]
+        ElMessage.error(`${c} 指令失败:设备 3s 内未响应`)
+      }
+    }, FEEDBACK_TIMEOUT_MS)
+  }
+
   try {
     await sendCmd(dev.id, c, value)
-    ElMessage.success(`指令已下发:${c}=${value}`)
+    // 不发"已下发"提示,等待状态变化决定成败
   } catch (e) {
+    // API 调用失败 → 立即清除 pending + 错误提示
+    if (pendingCmds[clickKey]) {
+      clearTimeout(pendingCmds[clickKey].timer)
+      delete pendingCmds[clickKey]
+    }
+    ElMessage.error(`${c} 指令下发失败: ${e?.message || '网络错误'}`)
   }
 }
 
 async function toggleLed(dev) {
-  const cur = dev.led_status ?? 0
-  const next = cur ? 0 : 1
-  dev.led_status = next
+  const next = isLedOn(dev.led_status) ? 0 : 1
   await cmd(dev, 'LED', next)
 }
 async function toggleStatus(dev) {
-  const cur = dev.device_status ?? 0
-  const next = cur ? 0 : 1
-  dev.device_status = next
+  const next = isDeviceActive(dev.device_status) ? 0 : 1
   await cmd(dev, 'STATUS', next)
 }
 
@@ -146,27 +220,68 @@ function findDevice(devId) {
   return null
 }
 
-// WS: 设备发现时刷新 + sensor_data 实时同步设备状态
+// 检查 pending 是否因状态变化而成功
+// field: 'led_status' | 'device_status',value: 当前 sensor_data 推送的值
+function _checkPendingSuccess(devId, field, value) {
+  const cmdName = field === 'led_status' ? 'LED' : 'STATUS'
+  const key = _pendingKey(devId, cmdName)
+  const p = pendingCmds[key]
+  if (!p) return
+  // sensor_data 推送的值已变为目标值 → 指令成功
+  // 兼容多种类型:number 1/0、bool、string 'active'/'sleep'
+  const v = value
+  const t = p.target
+  const matched =
+    v === t ||
+    (t === 1 && (v === true || v === 1 || v === '1' || v === 'active')) ||
+    (t === 0 && (v === false || v === 0 || v === '0' || v === 'sleep'))
+  if (matched) {
+    clearTimeout(p.timer)
+    delete pendingCmds[key]
+    ElMessage.success(`${cmdName} 指令执行成功`)
+  }
+}
+
+// WS: 设备发现时刷新 + sensor_data 实时同步设备状态 + 指令成功判定
+// 关键:先 off 再 on,避免组件多次挂载导致监听器累积
 function onSocket() {
   const s = getSocket()
-  s.on('device_discovered', () => loadGateways())
-  s.on('cmd_feedback', (p) => {
-    ElMessage.success(`设备反馈:${p.cmd}=${p.value} 成功`)
-  })
-  s.on('sensor_data', (p) => {
+  s.off('device_discovered').on('device_discovered', () => loadGateways())
+  s.off('sensor_data').on('sensor_data', (p) => {
     if (!p.device_id) return
     const found = findDevice(p.device_id)
     if (!found) return
     const dev = found.list[found.idx]
-    // 仅同步状态字段(避免覆盖设备本身字段如 mac/name)
-    if ('led_status' in p) dev.led_status = p.led_status
-    if ('device_status' in p) dev.device_status = p.device_status
+
+    // 同步状态字段,并检查 pending 是否成功
+    if ('led_status' in p) {
+      dev.led_status = p.led_status
+      _checkPendingSuccess(p.device_id, 'led_status', p.led_status)
+    }
+    if ('device_status' in p) {
+      dev.device_status = p.device_status
+      _checkPendingSuccess(p.device_id, 'device_status', p.device_status)
+    }
   })
+}
+
+function offSocket() {
+  const s = getSocket()
+  s.off('device_discovered')
+  s.off('sensor_data')
 }
 
 onMounted(async () => {
   await loadGateways()
   onSocket()
+})
+onBeforeUnmount(() => {
+  offSocket()
+  // 清理所有 pending 定时器,防止内存泄漏
+  for (const key of Object.keys(pendingCmds)) {
+    if (pendingCmds[key]?.timer) clearTimeout(pendingCmds[key].timer)
+    delete pendingCmds[key]
+  }
 })
 </script>
 
@@ -222,7 +337,7 @@ onMounted(async () => {
                 <span class="dc-name">{{ dev.name || dev.mac }}</span>
                 <span class="dc-bound" :class="{ bound: dev.bound }">{{ dev.bound ? '已绑定' : '未绑定' }}</span>
               </div>
-              <span class="dc-type label-eyebrow">{{ dev.type || '未知' }}</span>
+              <span class="dc-type label-eyebrow">{{ typeLabel(dev.type) || '未知' }}</span>
             </div>
             <div class="dc-mac mono">{{ dev.mac }}</div>
 
@@ -233,19 +348,25 @@ onMounted(async () => {
             <div class="dc-ctrl">
               <button
                 class="ctrl-btn led"
-                :class="{ on: !!dev.led_status }"
+                :class="{ on: isLedOn(dev.led_status), pending: isPending(dev, 'LED') }"
+                :disabled="isPending(dev, 'LED')"
                 @click="toggleLed(dev)"
-                :title="dev.led_status ? 'LED 开 · 点击关闭' : 'LED 关 · 点击开启'"
+                :title="isLedOn(dev.led_status) ? 'LED 开 · 点击关闭' : 'LED 关 · 点击开启'"
               >
-                <span class="ctrl-led"></span>LED
+                <span class="ctrl-led"></span>
+                <span v-if="isPending(dev, 'LED')" class="ctrl-text">···</span>
+                <span v-else>LED</span>
               </button>
               <button
                 class="ctrl-btn st"
-                :class="{ on: !!dev.device_status }"
+                :class="{ on: isDeviceActive(dev.device_status), pending: isPending(dev, 'STATUS') }"
+                :disabled="isPending(dev, 'STATUS')"
                 @click="toggleStatus(dev)"
-                :title="dev.device_status ? '运行中 · 点击进入休眠' : '休眠中 · 点击唤醒'"
+                :title="isDeviceActive(dev.device_status) ? '运行中 · 点击进入休眠' : '休眠中 · 点击唤醒'"
               >
-                <span class="ctrl-dot"></span>{{ dev.device_status ? '运行' : '休眠' }}
+                <span class="ctrl-dot"></span>
+                <span v-if="isPending(dev, 'STATUS')" class="ctrl-text">···</span>
+                <span v-else>{{ isDeviceActive(dev.device_status) ? '运行' : '休眠' }}</span>
               </button>
             </div>
           </article>
@@ -311,11 +432,9 @@ onMounted(async () => {
           <div v-for="(r, i) in streamDrawer.records" :key="i" class="stream-row">
             <div class="sr-time mono">{{ r.recorded_at }}</div>
             <div class="sr-reads mono">
-              <span v-if="r.temperature !== null">T<b>{{ r.temperature }}</b></span>
-              <span v-if="r.humidity !== null">H<b>{{ r.humidity }}</b></span>
-              <span v-if="r.light !== null">L<b>{{ r.light }}</b></span>
-              <span class="sr-led" :class="{ on: r.led_status }">LED</span>
-              <span class="sr-st">{{ r.device_status }}</span>
+              <span v-if="r.temperature !== null && r.temperature !== undefined">T<b>{{ r.temperature }}</b></span>
+              <span v-if="r.humidity !== null && r.humidity !== undefined">H<b>{{ r.humidity }}</b></span>
+              <span v-if="r.light !== null && r.light !== undefined">L<b>{{ r.light }}</b></span>
             </div>
           </div>
           <div v-if="!streamDrawer.records.length && !streamDrawer.loading" class="muted" style="padding:20px 0">
@@ -429,6 +548,39 @@ onMounted(async () => {
   font-family: var(--font-sans);
 }
 .ctrl-btn:hover { border-color: var(--sage); color: var(--sage-deep); }
+
+/* pending 态:loading + 不可点击 */
+.ctrl-btn.pending {
+  cursor: progress;
+  opacity: 0.7;
+  border-color: var(--ink-5);
+  color: var(--ink-4);
+  background: var(--paper-deep);
+  position: relative;
+}
+.ctrl-btn.pending::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-4);
+  border-top-color: transparent;
+  transform: translateY(-50%);
+  animation: ctrl-spin 0.8s linear infinite;
+}
+@keyframes ctrl-spin {
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+.ctrl-btn.pending .ctrl-text {
+  letter-spacing: 2px;
+  font-family: var(--font-mono);
+}
+.ctrl-btn:disabled {
+  cursor: progress;
+}
 
 /* LED 按钮:亮 = sage 实心发光 */
 .ctrl-btn.led.on {

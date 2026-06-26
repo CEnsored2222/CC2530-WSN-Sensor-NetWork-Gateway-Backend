@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 """认证接口:注册/登录/当前用户"""
 from flask import Blueprint, g, jsonify, request
 

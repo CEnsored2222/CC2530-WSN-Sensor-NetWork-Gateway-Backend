@@ -4,11 +4,11 @@ from config import Config
 
 TOPIC_PREFIX = Config.TOPIC_PREFIX
 
-# 始终订阅的主题(register/discovery/feedback/heartbeat 不受订阅管理控制)
+# 始终订阅的主题(register/discovery/heartbeat 不受订阅管理控制)
+# 注:feedback 主题已删除,指令反馈由本地网关解析后通过 led和status 主题上报
 ALWAYS_ON_TOPICS = [
     f"{TOPIC_PREFIX}/+/register",
     f"{TOPIC_PREFIX}/+/device/+/discovery",
-    f"{TOPIC_PREFIX}/+/device/+/feedback",
     f"{TOPIC_PREFIX}/+/heartbeat",
 ]
 

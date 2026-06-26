@@ -140,7 +140,7 @@ def predict(rows: List[Dict[str, Any]], metric: str, model_name: str = "linear",
         mae, r2 = None, None
 
     # 5. 预测未来时间点
-    # 假设数据采样间隔约为 10s(与入库节流一致),用最后一条时间外推
+    # 假设数据采样间隔约为 10min(与入库节流一致),用最后一条时间外推
     last_t_sec = float(X[-1, 0])
     # 取实际数据最后一个时间点作为基准
     last_dt = rows[-1]["recorded_at"] if rows and rows[-1].get("recorded_at") else t0

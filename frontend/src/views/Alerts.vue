@@ -1,7 +1,9 @@
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listRules, createRule, updateRule, deleteRule, toggleRule, listRecords, alertStats } from '@/api/alert'
+import { listGateways } from '@/api/gateway'
+import { listDevices } from '@/api/device'
 import { useUserStore } from '@/stores/user'
 import { getSocket } from '@/ws/socket'
 
@@ -59,6 +61,70 @@ const SEV_META = {
   critical: { label: '严重', tone: 'critical', sym: '✕' },
 }
 
+// ----- 设备绑定树(网关→设备) -----
+// el-tree 节点 id 用前缀区分: gw_{id} 网关级 / dev_{id} 设备级
+const gatewayTree = ref([])
+const treeRef = ref(null)
+const treeLoading = ref(false)
+
+async function loadGatewayTree() {
+  treeLoading.value = true
+  try {
+    const gws = await listGateways()
+    const tree = []
+    for (const gw of gws) {
+      const devs = await listDevices(gw.id)
+      tree.push({
+        id: `gw_${gw.id}`,
+        label: gw.name || gw.hostname || gw.gw_uuid,
+        type: 'gateway',
+        gwId: gw.id,
+        children: (devs || []).map((d) => ({
+          id: `dev_${d.id}`,
+          label: d.name || d.mac,
+          type: 'device',
+          gwId: gw.id,
+          devId: d.id,
+        })),
+      })
+    }
+    gatewayTree.value = tree
+  } finally {
+    treeLoading.value = false
+  }
+}
+
+// targets(后端结构) <-> tree checked keys 转换
+function targetsToKeys(targets) {
+  const keys = []
+  for (const t of targets || []) {
+    if (t.device_id === null || t.device_id === undefined) {
+      keys.push(`gw_${t.gateway_id}`)
+    } else {
+      keys.push(`dev_${t.device_id}`)
+    }
+  }
+  return keys
+}
+function keysToTargets(keys) {
+  const targets = []
+  const devMap = new Map() // devId -> gwId
+  for (const node of gatewayTree.value) {
+    for (const child of node.children || []) {
+      devMap.set(child.devId, child.gwId)
+    }
+  }
+  for (const k of keys) {
+    if (k.startsWith('gw_')) {
+      targets.push({ gateway_id: parseInt(k.slice(3)), device_id: null })
+    } else if (k.startsWith('dev_')) {
+      const devId = parseInt(k.slice(4))
+      targets.push({ gateway_id: devMap.get(devId), device_id: devId })
+    }
+  }
+  return targets
+}
+
 async function loadRules() {
   rulesLoading.value = true
   try {
@@ -68,17 +134,23 @@ async function loadRules() {
   }
 }
 
-function openCreate() {
+async function openCreate() {
   dialog.edit = null
   dialog.form = {
     name: '', metric: 'temperature', operator: 'gt', threshold: 35,
     logic: 'none', second_metric: 'humidity', second_operator: 'lt', second_threshold: 30,
-    severity: 'warning', enabled: true,
+    severity: 'warning', enabled: true, notify: false,
+    targetKeys: [],  // 设备绑定树选中节点 key
   }
+  await loadGatewayTree()
+  // 默认预选所有网关(对应"默认绑定全部网关")
+  dialog.form.targetKeys = gatewayTree.value.map((n) => n.id)
   dialog.visible = true
+  await nextTick()
+  syncTreeChecked()
 }
 
-function openEdit(rule) {
+async function openEdit(rule) {
   dialog.edit = rule
   dialog.form = {
     name: rule.name, metric: rule.metric, operator: rule.operator, threshold: rule.threshold,
@@ -86,9 +158,26 @@ function openEdit(rule) {
     second_metric: rule.second_metric || 'humidity',
     second_operator: rule.second_operator || 'lt',
     second_threshold: rule.second_threshold ?? 0,
-    severity: rule.severity, enabled: rule.enabled,
+    severity: rule.severity, enabled: rule.enabled, notify: !!rule.notify,
+    targetKeys: [],
   }
+  await loadGatewayTree()
+  dialog.form.targetKeys = targetsToKeys(rule.targets)
   dialog.visible = true
+  await nextTick()
+  syncTreeChecked()
+}
+
+// el-tree 选中同步
+function syncTreeChecked() {
+  if (treeRef.value) {
+    treeRef.value.setCheckedKeys(dialog.form.targetKeys || [], false)
+  }
+}
+function onTreeCheck() {
+  if (treeRef.value) {
+    dialog.form.targetKeys = treeRef.value.getCheckedKeys(false)
+  }
 }
 
 async function submitRule() {
@@ -98,13 +187,24 @@ async function submitRule() {
   if (f.logic !== 'none' && (f.second_threshold === '' || f.second_threshold === null)) {
     return ElMessage.warning('请输入第二阈值')
   }
+  // 构造提交载荷:把树选中 key 转为 targets
+  const payload = {
+    name: f.name, metric: f.metric, operator: f.operator, threshold: f.threshold,
+    logic: f.logic, severity: f.severity, enabled: f.enabled, notify: f.notify,
+  }
+  if (f.logic !== 'none') {
+    payload.second_metric = f.second_metric
+    payload.second_operator = f.second_operator
+    payload.second_threshold = f.second_threshold
+  }
+  payload.targets = keysToTargets(f.targetKeys || [])
   dialog.loading = true
   try {
     if (dialog.edit) {
-      await updateRule(dialog.edit.id, f)
+      await updateRule(dialog.edit.id, payload)
       ElMessage.success('规则已更新')
     } else {
-      await createRule(f)
+      await createRule(payload)
       ElMessage.success('规则已创建')
     }
     dialog.visible = false
@@ -192,7 +292,8 @@ function pushLive(a) {
 
 function onSocket() {
   const s = getSocket()
-  s.on('alert', (p) => {
+  // 先 off 再 on,避免组件多次挂载导致监听器累积
+  s.off('alert').on('alert', (p) => {
     p._uid = Date.now() + Math.random()
     pushLive(p)
   })
@@ -268,7 +369,7 @@ onBeforeUnmount(() => {
       <button class="tab" :class="{ on: tab === 'rules' }" @click="tab = 'rules'">
         <span class="tab-idx mono">02</span>预警规则
       </button>
-      <div class="tab-actions" v-if="tab === 'rules' && isAdmin">
+      <div class="tab-actions" v-if="tab === 'rules'">
         <el-button type="primary" @click="openCreate">+ 新建规则</el-button>
       </div>
     </section>
@@ -390,7 +491,7 @@ onBeforeUnmount(() => {
         <div v-if="!rulesLoading && !rules.length" class="empty">
           <div class="empty-icon">∅</div>
           <div class="empty-text muted">尚未配置规则</div>
-          <el-button v-if="isAdmin" type="primary" @click="openCreate">创建第一条规则</el-button>
+          <el-button type="primary" @click="openCreate">创建第一条规则</el-button>
         </div>
       </div>
     </section>
@@ -462,6 +563,30 @@ onBeforeUnmount(() => {
         <div class="field">
           <label class="label-eyebrow">启用状态</label>
           <el-switch v-model="dialog.form.enabled" />
+        </div>
+
+        <div class="field">
+          <label class="label-eyebrow">通报设置</label>
+          <el-switch v-model="dialog.form.notify" />
+          <span class="field-hint muted">开启后,命中规则时右下角弹出通报(3s 自动消失)</span>
+        </div>
+
+        <div class="field">
+          <label class="label-eyebrow">绑定设备</label>
+          <span class="field-hint muted">勾选网关=该网关下所有设备遵循规则;勾选设备=仅该设备遵循规则;可多选</span>
+          <div class="bind-tree-wrap" v-loading="treeLoading">
+            <el-tree
+              ref="treeRef"
+              :data="gatewayTree"
+              show-checkbox
+              check-strictly
+              node-key="id"
+              :props="{ label: 'label', children: 'children' }"
+              empty-text="暂无已绑定网关,请先在网关管理中绑定网关"
+              class="bind-tree"
+              @check="onTreeCheck"
+            />
+          </div>
         </div>
       </div>
 
@@ -883,6 +1008,85 @@ onBeforeUnmount(() => {
 /* —— 表单 —— */
 .form { display: flex; flex-direction: column; gap: 18px; }
 .field label { display: block; margin-bottom: 8px; }
+.field-hint { font-size: 12px; margin-left: 12px; }
+.field-hint.muted { display: block; margin-left: 0; margin-bottom: 10px; color: var(--ink-4); }
+
+/* —— 绑定设备树(双主题适配) —— */
+.bind-tree-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--paper);
+  transition: border-color 0.2s, background 0.2s;
+}
+.bind-tree-wrap::-webkit-scrollbar { width: 6px; }
+.bind-tree-wrap::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 3px;
+}
+.bind-tree-wrap::-webkit-scrollbar-track { background: transparent; }
+
+/* el-tree 内部默认带白色背景,需覆盖为透明以继承 wrap */
+.bind-tree :deep(.el-tree) {
+  background: transparent;
+  --el-tree-node-hover-bg-color: var(--sage-tint);
+  --el-tree-text-color: var(--ink-2);
+  --el-tree-expand-icon-color: var(--ink-3);
+}
+.bind-tree :deep(.el-tree-node__content) {
+  height: 34px;
+  border-radius: var(--radius);
+  transition: background 0.15s;
+}
+.bind-tree :deep(.el-tree-node__content:hover) {
+  background: var(--sage-tint);
+}
+.bind-tree :deep(.el-tree-node__content) > .el-tree-node__expand-icon {
+  color: var(--ink-3);
+}
+.bind-tree :deep(.el-tree-node__content) > .el-tree-node__expand-icon:hover {
+  color: var(--sage);
+}
+.bind-tree :deep(.el-tree-node__label) {
+  font-size: 13px;
+  color: var(--ink-2);
+  letter-spacing: 0.01em;
+}
+.bind-tree :deep(.el-tree__empty-text) {
+  color: var(--ink-4);
+  font-size: 12px;
+}
+
+/* checkbox:未选中态在深色背景下需提亮边框 */
+.bind-tree :deep(.el-checkbox__inner) {
+  background-color: var(--surface);
+  border-color: var(--line-strong);
+  border-radius: 3px;
+}
+.bind-tree :deep(.el-checkbox__inner:hover) {
+  border-color: var(--sage);
+}
+.bind-tree :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.bind-tree :deep(.el-checkbox__input.is-checked .el-checkbox__inner::after) {
+  border-color: var(--paper-deep);
+}
+/* indeterminate 态(网关半选) */
+.bind-tree :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.bind-tree :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner::before) {
+  background-color: var(--paper-deep);
+}
+/* checkbox label/文字继承主题色 */
+.bind-tree :deep(.el-checkbox__label) {
+  color: var(--ink-2);
+}
 .cond-row {
   display: flex;
   align-items: center;

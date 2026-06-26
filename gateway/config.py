@@ -10,7 +10,7 @@ EMQX_PASSWORD = os.getenv("EMQX_PASSWORD", "")
 EMQX_KEEPALIVE = int(os.getenv("EMQX_KEEPALIVE", "60"))
 
 # ============ 串口配置 ============
-SERIAL_PORT = os.getenv("SERIAL_PORT", "COM4")
+SERIAL_PORT = os.getenv("SERIAL_PORT", "COM1")
 SERIAL_BAUDRATE = int(os.getenv("SERIAL_BAUDRATE", "38400"))
 
 # 无硬件时开启模拟器(调试用)

@@ -7,7 +7,10 @@ export function getSocket() {
   if (socket) return socket
   socket = io({
     path: '/socket.io',
-    transports: ['websocket', 'polling'],
+    // 后端 Flask-SocketIO 使用 threading async_mode,仅支持 long-polling 传输。
+    // 若开启 websocket 升级,Werkzeug 无法处理协议升级会抛
+    // "write() before start_response" 500,故此处只保留 polling。
+    transports: ['polling'],
     autoConnect: false
   })
   return socket

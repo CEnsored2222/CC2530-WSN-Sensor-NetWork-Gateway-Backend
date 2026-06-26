@@ -47,8 +47,6 @@ def _fetch_history(device_id, limit=_DEFAULT_LOOKBACK):
             "temperature": float(r.temperature) if r.temperature is not None else None,
             "humidity": float(r.humidity) if r.humidity is not None else None,
             "light": float(r.light) if r.light is not None else None,
-            "led_status": r.led_status,
-            "device_status": r.device_status,
         }
         for r in rows
     ]

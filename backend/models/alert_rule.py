@@ -26,12 +26,23 @@ class AlertRule(db.Model):
     second_operator = db.Column(db.Enum(*OPERATORS), nullable=True)
     second_threshold = db.Column(db.Numeric(10, 2), nullable=True)
     severity = db.Column(db.Enum(*SEVERITIES), nullable=False, default="warning")
+    # 通报设置:为 True 时命中规则会向用户右下角推送通报弹窗(3s 自动消失)
+    notify = db.Column(db.Boolean, nullable=False, default=False)
     enabled = db.Column(db.Boolean, nullable=False, default=True)
-    created_by = db.Column(db.BigInteger, db.ForeignKey("users.id"), nullable=True)
+    # 规则所属用户(触发后只推送给该用户),不许为空
+    user_id = db.Column(db.BigInteger, db.ForeignKey("users.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, server_default=db.func.now())
 
-    def to_dict(self):
-        return {
+    # 绑定设备:一对多关联表。device_id 为 NULL 表示绑定该网关下所有设备
+    targets = db.relationship(
+        "AlertRuleTarget",
+        backref="rule",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+    def to_dict(self, with_targets=True):
+        d = {
             "id": self.id,
             "name": self.name,
             "metric": self.metric,
@@ -42,7 +53,11 @@ class AlertRule(db.Model):
             "second_operator": self.second_operator,
             "second_threshold": float(self.second_threshold) if self.second_threshold is not None else None,
             "severity": self.severity,
+            "notify": bool(self.notify),
             "enabled": bool(self.enabled),
-            "created_by": self.created_by,
+            "user_id": self.user_id,
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None,
         }
+        if with_targets:
+            d["targets"] = [t.to_dict() for t in self.targets]
+        return d

@@ -53,3 +53,37 @@ def list_actions():
     """返回数据库中已出现过的 action 类型,用于筛选项。"""
     rows = db.session.query(OperationLog.action).distinct().all()
     return jsonify([r[0] for r in rows if r[0]])
+
+
+@bp.delete("/operation-logs/<int:lid>")
+@admin_required
+def delete_log(lid):
+    """删除单条日志(数据库物理删除,不记录该删除动作)。"""
+    log = db.session.get(OperationLog, lid)
+    if not log:
+        return jsonify({"error": "日志不存在"}), 404
+    db.session.delete(log)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@bp.delete("/operation-logs")
+@admin_required
+def delete_logs_batch():
+    """批量删除日志(数据库物理删除,不记录该删除动作)。
+
+    请求体:{"ids": [1, 2, 3]}
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "ids 必须为非空数组"}), 400
+    # 过滤非法 id
+    clean_ids = [int(i) for i in ids if isinstance(i, (int, str)) and str(i).isdigit()]
+    if not clean_ids:
+        return jsonify({"error": "ids 必须为非空数组"}), 400
+    OperationLog.query.filter(OperationLog.id.in_(clean_ids)).delete(
+        synchronize_session=False
+    )
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": len(clean_ids)})

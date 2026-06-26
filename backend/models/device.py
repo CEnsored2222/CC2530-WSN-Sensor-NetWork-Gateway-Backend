@@ -11,7 +11,7 @@ class Device(db.Model):
     gateway_id = db.Column(db.BigInteger, db.ForeignKey("gateways.id"), nullable=False)
     mac = db.Column(db.String(32), nullable=False)
     name = db.Column(db.String(64), nullable=True)
-    type = db.Column(db.String(32), nullable=True)
+    type = db.Column(db.JSON, nullable=True, comment="设备可采集的数据类型列表,如['temperature','humidity']")
     bound = db.Column(db.Boolean, nullable=False, default=False)
     last_seen = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, server_default=db.func.now())

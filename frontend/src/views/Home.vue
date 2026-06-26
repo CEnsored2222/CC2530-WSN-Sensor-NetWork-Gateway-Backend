@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, shallowRef } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { getSocket } from '@/ws/socket'
 import { realtime, overview } from '@/api/data'
@@ -14,15 +14,16 @@ const devices = ref([]) // [{device, latest}]
 // 实时折线:BUG2 按设备分组,BUG3 双 Y 轴
 // 每个「设备 × 指标」一条独立 series,温/湿走左轴(0),光照走右轴(1)
 // 修复闪烁:用 time 轴 + 30 分钟时间窗口 + 增量更新
-//   series 数组只创建一次,后续只更新其 data,避免 ECharts 重建 series 实例
 const WINDOW_MS = 30 * 60 * 1000  // 30 分钟滚动窗口
-// chartSeries.value 始终是同一数组引用,内部元素也是稳定对象
-//   触发 LineChart 深度 watch 的关键是 data 数组引用变化(我们用 splice/push 原地修改)
 const chartSeries = shallowRef({ value: [] })
-// rt[key] = { data: [[ts_ms, v], ...], seriesIdx: 在 chartSeries.value 中的索引 }
-//   每个 series 对象保持引用稳定,只更新其 data 数组
-const rt = {}               // key → { data, name, color, yAxisIndex }
-const seriesByKey = {}      // key → series 对象引用(同 rt[key])
+// rt[key] = [[timestamp_ms, value], ...]  其中 key = `${deviceId}:${metric}`
+const rt = {}
+
+// 设备状态(device_status)由网关通过 status 主题统一上报,前端直接信任 sensor_data 推送:
+//   - 新 MAC 出现 → 网关发 active
+//   - 5s 内无新数据 → 网关发 sleep
+//   - STATUS 控制指令成功 → 网关发 active/sleep
+// 因此前端无需再做本地 1.5s 休眠检测。
 
 const METRIC_META = {
   temperature: { label: '温度', unit: '°C', color: '#f5a35c', yAxisIndex: 0 },
@@ -63,7 +64,6 @@ const legendItems = computed(() => {
   for (const item of devices.value) {
     const devName = item.device.name || item.device.mac
     const devColor = deviceColor(item.device.id)
-    // 仅按 device.type 推断该设备实际采集的指标
     for (const m of devMetrics(item)) {
       items.push({
         key: seriesKey(item.device.id, m),
@@ -120,27 +120,24 @@ function isDeviceActive(status) {
   return status === 'active' || status === 1 || status === '1'
 }
 
-// 解析设备 type 字段为指标数组(如 "温度/湿度" -> ['temperature','humidity'])
-// 兼容历史中英文 type
-const TYPE_LABEL_TO_METRIC = {
-  '温度': 'temperature', 'temperature': 'temperature',
-  '湿度': 'humidity',    'humidity': 'humidity',
-  '光照': 'light',       'light': 'light',
+// 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
+// 直接从中提取指标列表;type 为空/null 时回退为全部
+const METRIC_LABELS = {
+  temperature: '温度', humidity: '湿度', light: '光照',
 }
 function devMetrics(item) {
-  // 优先用 device.type 推断;若 type 缺失,则回退:用 latest 中实际非空字段推断
   const t = item.device?.type
-  if (t) {
-    const parts = t.split('/').map((s) => s.trim().toLowerCase()).filter(Boolean)
-    const metrics = parts.map((p) => TYPE_LABEL_TO_METRIC[p]).filter(Boolean)
-    if (metrics.length) return metrics
-  }
-  // 回退:无 type 时根据 latest 推断(初次加载)
+  if (Array.isArray(t) && t.length) return t
+  // 回退: 无 type 时根据 latest 推断(初次加载)
   const fallback = []
   if (item.latest?.temperature != null) fallback.push('temperature')
   if (item.latest?.humidity != null)    fallback.push('humidity')
   if (item.latest?.light != null)       fallback.push('light')
   return fallback.length ? fallback : ['temperature', 'humidity', 'light']
+}
+function typeLabel(typeArr) {
+  if (!Array.isArray(typeArr) || !typeArr.length) return null
+  return typeArr.map((k) => METRIC_LABELS[k] || k).join('/')
 }
 
 // 指标渲染元数据
@@ -155,7 +152,8 @@ const hasDevices = computed(() => devices.value.length > 0)
 // WebSocket 实时数据
 function onSocket() {
   const s = getSocket()
-  s.on('sensor_data', (p) => {
+  // 先 off 再 on,避免组件多次挂载导致监听器累积
+  s.off('sensor_data').on('sensor_data', (p) => {
     // p = { device_id, device_name, ts, temperature, humidity, light, ... }
     // 用数据真实采集时间 ts(秒),否则用接收时刻,保证多设备时间轴对齐
     const tsSec = Number(p.ts)
@@ -164,76 +162,76 @@ function onSocket() {
     const devName = p.device_name || (devices.value.find((d) => d.device.id === devId)?.device?.name) || '未知'
     const devColor = deviceColor(devId)
 
-    // 找到当前设备的 device 对象(用于 series name)
-    const devItem = devices.value.find((d) => d.device.id === devId)
-    const nameBase = devItem ? (devItem.device.name || devItem.device.mac) : devName
-
-    let chartDirty = false  // 标记本轮是否有 series data 变化
-
     // 对该设备推送的每个非空指标,维护独立 series
     for (const metric of Object.keys(METRIC_META)) {
       const raw = p[metric]
       if (raw === null || raw === undefined) continue
       const key = seriesKey(devId, metric)
-
-      // 懒初始化:首次见到该 key 时创建稳定对象
-      if (!rt[key]) {
-        const meta = METRIC_META[metric]
-        rt[key] = {
-          name: seriesName(nameBase, metric),
-          color: devColor,
-          yAxisIndex: meta.yAxisIndex,
-          data: []
-        }
-        seriesByKey[key] = rt[key]
-        // 加入 chartSeries 数组(保持同一数组引用)
-        chartSeries.value.value.push(rt[key])
-        chartDirty = true
-      } else {
-        // 设备改名时同步更新 name
-        const expectedName = seriesName(nameBase, metric)
-        if (rt[key].name !== expectedName) {
-          rt[key].name = expectedName
-          chartDirty = true
-        }
-      }
-
-      const arr = rt[key].data
-      // 时间戳去重:同毫秒的点直接更新值
+      if (!rt[key]) rt[key] = []
+      // 时间戳去重:同毫秒的点跳过(避免重复)
+      const arr = rt[key]
       if (arr.length && arr[arr.length - 1][0] === tsMs) {
         arr[arr.length - 1][1] = Number(raw)
       } else {
         arr.push([tsMs, Number(raw)])
       }
-      // 清理超出 30 分钟窗口的旧点(原地 splice,保持数组引用)
+      // 清理超出 30 分钟窗口的旧点
       const cutoff = tsMs - WINDOW_MS
-      let cutIdx = 0
-      while (cutIdx < arr.length && arr[cutIdx][0] < cutoff) cutIdx++
-      if (cutIdx > 0) arr.splice(0, cutIdx)
-      chartDirty = true
+      while (arr.length && arr[0][0] < cutoff) arr.shift()
     }
 
-    // 触发 LineChart 增量更新:替换 value 数组(数组内容仍是稳定对象引用)
-    // shallowRef 需要新对象触发 watch,这里只替换外层包装
-    if (chartDirty) {
-      chartSeries.value = { value: chartSeries.value.value }
-    }
+    // 重建所有 series(为不同设备的同指标保持独立)
+    // 节流:同一帧内多条推送合并为一次重建,避免高频推送频繁触发 LineChart watch
+    scheduleRebuild()
 
-    // 更新对应设备卡片的 latest
+    // 立即更新对应设备卡片的 latest(不节流,确保卡片读数实时)
     const idx = devices.value.findIndex((d) => d.device.id === p.device_id)
     if (idx >= 0) {
       devices.value[idx].latest = { ...devices.value[idx].latest, ...p }
-      // 同步 device.type 到前端 device 对象(BUG1 反映)
-      if (p.device_type) {
+      // 同步 device.type 到前端 device 对象
+      if (p.device_type && Array.isArray(p.device_type)) {
         devices.value[idx].device = { ...devices.value[idx].device, type: p.device_type }
       }
     }
   })
 }
 
+// 节流重建 seriesOut:用 requestAnimationFrame 合并同一帧内的多次 WS 推送
+let rebuildRaf = null
+function scheduleRebuild() {
+  if (rebuildRaf) return
+  rebuildRaf = requestAnimationFrame(() => {
+    rebuildRaf = null
+    const seriesOut = []
+    for (const [key, data] of Object.entries(rt)) {
+      const [devIdStr, metric] = key.split(':')
+      const devIdNum = Number(devIdStr)
+      const devItem = devices.value.find((d) => d.device.id === devIdNum)
+      const devName = devItem ? (devItem.device.name || devItem.device.mac) : '未知'
+      const name = seriesName(devName, metric)
+      const meta = METRIC_META[metric]
+      seriesOut.push({
+        name,
+        color: deviceColor(devIdNum),
+        yAxisIndex: meta.yAxisIndex,
+        // 直接引用 rt[key] 数组,LineChart setOption merge 模式只更新 data
+        data
+      })
+    }
+    chartSeries.value = { value: seriesOut }
+  })
+}
+
 onMounted(async () => {
   await load()
   onSocket()
+})
+onBeforeUnmount(() => {
+  getSocket().off('sensor_data')
+  if (rebuildRaf) {
+    cancelAnimationFrame(rebuildRaf)
+    rebuildRaf = null
+  }
 })
 </script>
 
@@ -313,8 +311,8 @@ onMounted(async () => {
             </div>
             <div class="dc-mac-row">
               <div class="dc-mac mono">{{ item.device.mac }}</div>
-              <span v-if="item.device.type" class="dc-type-badge" :title="`设备类型:${item.device.type}`">
-                {{ item.device.type }}
+              <span v-if="typeLabel(item.device.type)" class="dc-type-badge" :title="`设备类型:${typeLabel(item.device.type)}`">
+                {{ typeLabel(item.device.type) }}
               </span>
             </div>
 

@@ -25,7 +25,6 @@ from mac_registry import MacRegistry
 from mqtt_client import GatewayMqttClient
 from serial_reader import SerialReader
 from serial_writer import SerialWriter
-from serial_simulator import SerialSimulator
 
 
 def get_or_create_uuid() -> str:
@@ -138,6 +137,8 @@ def main():
     )
 
     def on_mac_remove(mac):
+        # MAC 5s 超时回调:发布 sleep
+        # 设备状态判断方式之一(另一种:控制指令成功反馈 → serial_reader._handle_feedback)
         if gateway_state.approved:
             mqtt.publish_status(mac, "sleep")
             print(f"[Gateway] 设备 {mac} 超时({config.MAC_TIMEOUT_SECONDS}s 无数据),发布 sleep")

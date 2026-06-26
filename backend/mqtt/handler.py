@@ -5,8 +5,13 @@
 - register:落库网关(status=pending),WS 广播 gateway_pending 给所有用户
 - heartbeat:更新网关 last_seen
 - discovery:落库设备(不存在则建),WS 推送 device_discovered 给绑定用户
-- 数据类(temp/hum/light/led/status):更新缓冲+实时 WS 推送 sensor_data
-- feedback:WS 推送 cmd_feedback
+- 数据类(temp/hum/light/led/status):更新 data_buffer + 实时 WS 推送 sensor_data
+
+状态管理统一:
+- led_status / device_status 仅在 data_buffer 内存缓冲中保留,不入 sensor_data 表
+- flush 入库时只写 temperature/humidity/light(去空+去重),状态字段不落库
+- 前端通过 sensor_data WS 事件中的 led_status/device_status 获取实时状态
+- 指令反馈由本地网关解析后通过 led/status 主题上报(feedback 主题已删除)
 
 所有 DB 操作在 app context 中执行(on_message 运行于 paho 线程)。"""
 import json
@@ -55,8 +60,6 @@ class MqttHandler:
             gw_uuid, mac, suffix = m.group(1), m.group(2), m.group(3)
             if suffix == "discovery":
                 self._handle_discovery(gw_uuid, mac, data)
-            elif suffix == "feedback":
-                self._handle_feedback(gw_uuid, mac, data)
             elif suffix in topics.TOPIC_SUFFIX_TO_FIELD:
                 self._handle_data(gw_uuid, mac, suffix, data)
             return
@@ -115,7 +118,9 @@ class MqttHandler:
     def _get_or_create_device(self, gw, mac, dev_type=None):
         dev = Device.query.filter_by(gateway_id=gw.id, mac=mac).first()
         if dev is None:
-            dev = Device(gateway_id=gw.id, mac=mac, type=dev_type, bound=False)
+            # dev_type 现在应为 list(如 ["temperature"]),若非 list 则忽略
+            t = dev_type if isinstance(dev_type, list) else None
+            dev = Device(gateway_id=gw.id, mac=mac, type=t, bound=False)
             db.session.add(dev)
             db.session.commit()
             print(f"[MQTT] 新设备发现 gw={gw.gw_uuid} mac={mac}")
@@ -125,39 +130,36 @@ class MqttHandler:
         gw = Gateway.query.filter_by(gw_uuid=gw_uuid).first()
         if not gw:
             return
-        dev = self._get_or_create_device(gw, mac, data.get("type"))
+        dev = self._get_or_create_device(gw, mac)
         if gw.user_id:
             socketio.emit("device_discovered", {"device": dev.to_dict()},
                           room=f"user_{gw.user_id}")
 
     # ---------- 设备类型推断 ----------
-    # 设备 type 用 "/" 分隔多种数据类型,例如 "温度/湿度" 或 "温度/湿度/光照"
-    # 不将 led_status / device_status 计入 type,它们属于设备控制状态而非采集数据
-    _DATA_SUFFIX_LABELS = {
-        "temp": "温度",
-        "hum":  "湿度",
-        "light": "光照",
+    # device.type 现在是一个 JSON 数组,存储该设备可采集的指标列表。
+    # 例如温湿度传感器: ["temperature", "humidity"]
+    # 后端根据收到的数据报文动态累积推断,不依赖网关上报的静态类型。
+    _DATA_SUFFIX_FIELDS = {
+        "temperature": "temperature",
+        "humidity":  "humidity",
+        "light": "light",
     }
 
     def _infer_device_type(self, dev, suffix):
         """根据历史上报数据类型累积推断设备 type。
 
         Returns:
-            str | None: 推断出的 type 字符串(如 "温度/湿度");若 suffix 不属于数据类型,返回 None
+            list | None: 推断出的指标列表(如 ["temperature","humidity"]);若 suffix 不属于数据类型,返回 None
         """
-        label = self._DATA_SUFFIX_LABELS.get(suffix)
-        if not label:
+        field = self._DATA_SUFFIX_FIELDS.get(suffix)
+        if not field:
             return None
-        # 解析当前已累积的类型
-        existing = []
-        if dev.type:
-            existing = [p.strip() for p in dev.type.split("/") if p.strip()]
-        if label not in existing:
-            existing.append(label)
-        # 按固定顺序排序输出(温→湿→光),保证稳定
-        order = ["温度", "湿度", "光照"]
+        existing = list(dev.type) if dev.type else []
+        if field not in existing:
+            existing.append(field)
+        order = ["temperature", "humidity", "light"]
         existing = [x for x in order if x in existing]
-        return "/".join(existing) if existing else None
+        return existing if existing else None
 
     def _handle_data(self, gw_uuid, mac, suffix, data):
         gw = Gateway.query.filter_by(gw_uuid=gw_uuid).first()
@@ -166,10 +168,10 @@ class MqttHandler:
         dev = self._get_or_create_device(gw, mac)
         dev.last_seen = datetime.now()
 
-        # BUG1: 根据收到的数据类型动态推断并更新设备 type
-        # 累积设备可上报的数据类型(温度/湿度/光照/LED/状态),覆盖原始静态 type
+        # 根据收到的数据类型动态推断并更新设备 type
+        # 累积设备可上报的数据类型(温度/湿度/光照),不包含 LED/状态等控制字段
         new_type = self._infer_device_type(dev, suffix)
-        if new_type and dev.type != new_type:
+        if new_type is not None and sorted(dev.type or []) != sorted(new_type):
             dev.type = new_type
         db.session.commit()
 
@@ -208,17 +210,3 @@ class MqttHandler:
             )
         except Exception as e:
             print(f"[Alert] 评估异常 dev={mac} err={e}")
-
-    def _handle_feedback(self, gw_uuid, mac, data):
-        gw = Gateway.query.filter_by(gw_uuid=gw_uuid).first()
-        if not gw or not gw.user_id:
-            return
-        dev = Device.query.filter_by(gateway_id=gw.id, mac=mac).first()
-        socketio.emit("cmd_feedback", {
-            "device_id": dev.id if dev else None,
-            "dev_mac": mac,
-            "cmd": data.get("cmd"),
-            "result": data.get("result"),
-            "value": data.get("value"),
-            "ts": data.get("ts"),
-        }, room=f"user_{gw.user_id}")
