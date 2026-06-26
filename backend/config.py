@@ -25,8 +25,8 @@ class Config:
 
     # ============ 业务参数 ============
     TOPIC_PREFIX = "smart_home/gateway"
-    DATA_FLUSH_INTERVAL = 10          # 数据入库节流间隔(秒)
-    MAC_TIMEOUT_SECONDS = 10          # 设备离线判定(秒)
+    DATA_FLUSH_INTERVAL = 600          # 数据入库节流间隔(秒)
+    MAC_TIMEOUT_SECONDS = 5          # 设备离线判定(秒)
 
     # ============ 启动行为 ============
     CREATE_TABLES_ON_START = os.getenv("CREATE_TABLES", "true").lower() == "true"

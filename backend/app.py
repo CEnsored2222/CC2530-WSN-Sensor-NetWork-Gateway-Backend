@@ -23,6 +23,7 @@ from models import sensor_data as sensor_data_model  # noqa: F401  注册模型
 from models.user import User
 from models.subscription import Subscription
 from models.alert_rule import AlertRule
+from models.prediction import Prediction  # noqa: F401  注册模型
 from services.data_buffer import DataBuffer
 from mqtt.client import MqttClient
 from mqtt.handler import MqttHandler
@@ -37,7 +38,7 @@ def create_app():
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
     # 注册蓝图
-    from api import auth, gateway, device, data, subscription, operation_log, alert
+    from api import auth, gateway, device, data, subscription, operation_log, alert, prediction
     app.register_blueprint(auth.bp, url_prefix="/api/auth")
     app.register_blueprint(gateway.bp, url_prefix="/api")
     app.register_blueprint(device.bp, url_prefix="/api")
@@ -45,6 +46,7 @@ def create_app():
     app.register_blueprint(subscription.bp, url_prefix="/api")
     app.register_blueprint(operation_log.bp, url_prefix="/api")
     app.register_blueprint(alert.bp, url_prefix="/api")
+    app.register_blueprint(prediction.bp, url_prefix="/api")
 
     # 注册 WebSocket 事件
     from ws import events  # noqa: F401

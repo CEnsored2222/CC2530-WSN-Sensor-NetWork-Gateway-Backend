@@ -16,6 +16,7 @@ const routes = [
       { path: 'devices', name: 'devices', component: () => import('@/views/Devices.vue') },
       { path: 'history', name: 'history', component: () => import('@/views/History.vue') },
       { path: 'alerts', name: 'alerts', component: () => import('@/views/Alerts.vue') },
+      { path: 'prediction', name: 'prediction', component: () => import('@/views/Prediction.vue') },
       {
         path: 'admin/subscription',
         name: 'subscription',

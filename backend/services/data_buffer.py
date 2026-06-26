@@ -2,7 +2,7 @@
 """数据入库缓冲。
 
 后端订阅的温度/湿度/光照/LED状态/设备状态实时通过 WebSocket 推送前端(不入库),
-同时缓冲每台设备的最新值,每 10s 批量 flush 到 sensor_data 表。
+同时缓冲每台设备的最新值,每 60s 批量 flush 到 sensor_data 表。
 
 - latest: 持久缓存每台设备最新值(供实时推送与历史查询取最新)
 - dirty:  标记自上次 flush 以来有新数据的设备,flush 时仅插入这些设备
@@ -13,7 +13,7 @@ from datetime import datetime
 
 
 class DataBuffer:
-    def __init__(self, db, sensor_data_model, app, flush_interval=10):
+    def __init__(self, db, sensor_data_model, app, flush_interval=60):
         self._db = db
         self._model = sensor_data_model
         self._app = app

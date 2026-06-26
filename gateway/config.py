@@ -10,8 +10,8 @@ EMQX_PASSWORD = os.getenv("EMQX_PASSWORD", "")
 EMQX_KEEPALIVE = int(os.getenv("EMQX_KEEPALIVE", "60"))
 
 # ============ 串口配置 ============
-SERIAL_PORT = os.getenv("SERIAL_PORT", "COM1")
-SERIAL_BAUDRATE = int(os.getenv("SERIAL_BAUDRATE", "9600"))
+SERIAL_PORT = os.getenv("SERIAL_PORT", "COM4")
+SERIAL_BAUDRATE = int(os.getenv("SERIAL_BAUDRATE", "38400"))
 
 # 无硬件时开启模拟器(调试用)
 SIMULATE_SERIAL = os.getenv("SIMULATE_SERIAL", "false").lower() == "true"
@@ -33,5 +33,5 @@ METRIC_TO_TOPIC = {
 }
 
 # ============ 定时参数 ============
-MAC_TIMEOUT_SECONDS = 10      # 设备 MAC 无数据超时(秒),超时剔除并发布休眠
+MAC_TIMEOUT_SECONDS = 5      # 设备 MAC 无数据超时(秒),超时剔除并发布休眠
 HEARTBEAT_INTERVAL = 30       # 网关心跳间隔(秒)

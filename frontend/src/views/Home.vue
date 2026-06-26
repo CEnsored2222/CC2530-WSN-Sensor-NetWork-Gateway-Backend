@@ -11,25 +11,69 @@ const loading = ref(true)
 const overviewData = ref({ gateway_count: 0, device_count: 0, bound_device_count: 0 })
 const devices = ref([]) // [{device, latest}]
 
-// 实时折线:温度/湿度/光照(归一化多线)
-const MAX_POINTS = 30
+// 实时折线:BUG2 按设备分组,BUG3 双 Y 轴
+// 每个「设备 × 指标」一条独立 series,温/湿走左轴(0),光照走右轴(1)
+// 修复闪烁:用 time 轴 + 30 分钟时间窗口 + 增量更新
+//   series 数组只创建一次,后续只更新其 data,避免 ECharts 重建 series 实例
+const WINDOW_MS = 30 * 60 * 1000  // 30 分钟滚动窗口
+// chartSeries.value 始终是同一数组引用,内部元素也是稳定对象
+//   触发 LineChart 深度 watch 的关键是 data 数组引用变化(我们用 splice/push 原地修改)
 const chartSeries = shallowRef({ value: [] })
-const rt = { temp: [], hum: [], light: [] }
-const timeAxis = []
+// rt[key] = { data: [[ts_ms, v], ...], seriesIdx: 在 chartSeries.value 中的索引 }
+//   每个 series 对象保持引用稳定,只更新其 data 数组
+const rt = {}               // key → { data, name, color, yAxisIndex }
+const seriesByKey = {}      // key → series 对象引用(同 rt[key])
 
 const METRIC_META = {
-  temperature: { label: '温度', unit: '°C', color: '#f5a35c', field: 'temperature' },
-  humidity: { label: '湿度', unit: '%', color: '#4dd6c1', field: 'humidity' },
-  light: { label: '光照', unit: 'lx', color: '#b58cf0', field: 'light' }
+  temperature: { label: '温度', unit: '°C', color: '#f5a35c', yAxisIndex: 0 },
+  humidity:    { label: '湿度', unit: '%',  color: '#4dd6c1', yAxisIndex: 0 },
+  light:       { label: '光照', unit: 'lx', color: '#b58cf0', yAxisIndex: 1 }
 }
 
-// 图例可见性切换:key = series name
-const SERIES_KEYS = [
-  { key: '温度', name: '温度 °C', color: '#f5a35c' },
-  { key: '湿度', name: '湿度 %', color: '#4dd6c1' },
-  { key: '光照', name: '光照 lx', color: '#b58cf0' }
-]
+// 设备颜色池:为不同设备分配不同色相,避免多设备同指标曲线颜色冲突
+const DEVICE_COLORS = ['#f5a35c', '#4dd6c1', '#b58cf0', '#7fa9ff', '#ff7a59',
+                       '#9ad96a', '#e36b8b', '#5ad1d8', '#d6a04a', '#8fa3d1']
+
+// 设备颜色映射:deviceId -> colorIndex
+const deviceColorMap = ref({})
+let colorCursor = 0
+function deviceColor(devId) {
+  if (!deviceColorMap.value[devId]) {
+    deviceColorMap.value[devId] = DEVICE_COLORS[colorCursor % DEVICE_COLORS.length]
+    colorCursor++
+  }
+  return deviceColorMap.value[devId]
+}
+
+// 图例:按「设备 × 指标」组合显示
+// 名称格式:"设备名 · 指标" 例如 "Node-A · 温度"
 const hiddenSeries = ref(new Set()) // 存放被隐藏的 series name
+
+function seriesKey(deviceId, metric) {
+  return `${deviceId}:${metric}`
+}
+function seriesName(deviceName, metric) {
+  return `${deviceName || '未知'} · ${METRIC_META[metric].label}`
+}
+
+// 图例:按「设备 × 该设备实际采集指标」组合显示
+// 不为温/湿设备生成光照图例项,反之亦然
+const legendItems = computed(() => {
+  const items = []
+  for (const item of devices.value) {
+    const devName = item.device.name || item.device.mac
+    const devColor = deviceColor(item.device.id)
+    // 仅按 device.type 推断该设备实际采集的指标
+    for (const m of devMetrics(item)) {
+      items.push({
+        key: seriesKey(item.device.id, m),
+        name: seriesName(devName, m),
+        color: devColor
+      })
+    }
+  }
+  return items
+})
 
 function toggleSeries(name) {
   const s = new Set(hiddenSeries.value)
@@ -40,6 +84,14 @@ function toggleSeries(name) {
 function isSeriesVisible(name) {
   return !hiddenSeries.value.has(name)
 }
+
+// 是否需要双 Y 轴(同时存在光照 + 温/湿 时启用)
+const useDualAxis = computed(() => {
+  const hasLight = (chartSeries.value.value || []).some((s) => s.yAxisIndex === 1)
+  const hasSmall = (chartSeries.value.value || []).some((s) => s.yAxisIndex === 0)
+  return hasLight && hasSmall
+})
+
 // 过滤后的 series,传给 LineChart
 const displaySeries = computed(() =>
   (chartSeries.value.value || []).filter((s) => isSeriesVisible(s.name))
@@ -51,6 +103,8 @@ async function load() {
     const [ov, rt2] = await Promise.all([overview(), realtime()])
     overviewData.value = ov
     devices.value = rt2.devices || []
+    // 预分配设备颜色
+    devices.value.forEach((d) => deviceColor(d.device.id))
   } finally {
     loading.value = false
   }
@@ -66,35 +120,115 @@ function isDeviceActive(status) {
   return status === 'active' || status === 1 || status === '1'
 }
 
+// 解析设备 type 字段为指标数组(如 "温度/湿度" -> ['temperature','humidity'])
+// 兼容历史中英文 type
+const TYPE_LABEL_TO_METRIC = {
+  '温度': 'temperature', 'temperature': 'temperature',
+  '湿度': 'humidity',    'humidity': 'humidity',
+  '光照': 'light',       'light': 'light',
+}
+function devMetrics(item) {
+  // 优先用 device.type 推断;若 type 缺失,则回退:用 latest 中实际非空字段推断
+  const t = item.device?.type
+  if (t) {
+    const parts = t.split('/').map((s) => s.trim().toLowerCase()).filter(Boolean)
+    const metrics = parts.map((p) => TYPE_LABEL_TO_METRIC[p]).filter(Boolean)
+    if (metrics.length) return metrics
+  }
+  // 回退:无 type 时根据 latest 推断(初次加载)
+  const fallback = []
+  if (item.latest?.temperature != null) fallback.push('temperature')
+  if (item.latest?.humidity != null)    fallback.push('humidity')
+  if (item.latest?.light != null)       fallback.push('light')
+  return fallback.length ? fallback : ['temperature', 'humidity', 'light']
+}
+
+// 指标渲染元数据
+const METRIC_RENDER = {
+  temperature: { label: '温度', unit: '°C', digits: 1 },
+  humidity:    { label: '湿度', unit: '%',  digits: 1 },
+  light:       { label: '光照', unit: 'lx', digits: 0 },
+}
+
 const hasDevices = computed(() => devices.value.length > 0)
 
 // WebSocket 实时数据
 function onSocket() {
   const s = getSocket()
   s.on('sensor_data', (p) => {
-    // p = { device_id, ...fields }
-    const t = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-    push(rt.temp, [t, p.temperature ?? null])
-    push(rt.hum, [t, p.humidity ?? null])
-    push(rt.light, [t, p.light ?? null])
-    chartSeries.value = {
-      value: [
-        { name: '温度 °C', color: '#f5a35c', data: [...rt.temp] },
-        { name: '湿度 %', color: '#4dd6c1', data: [...rt.hum] },
-        { name: '光照 lx', color: '#b58cf0', data: [...rt.light] }
-      ]
+    // p = { device_id, device_name, ts, temperature, humidity, light, ... }
+    // 用数据真实采集时间 ts(秒),否则用接收时刻,保证多设备时间轴对齐
+    const tsSec = Number(p.ts)
+    const tsMs = (tsSec && !isNaN(tsSec)) ? tsSec * 1000 : Date.now()
+    const devId = p.device_id
+    const devName = p.device_name || (devices.value.find((d) => d.device.id === devId)?.device?.name) || '未知'
+    const devColor = deviceColor(devId)
+
+    // 找到当前设备的 device 对象(用于 series name)
+    const devItem = devices.value.find((d) => d.device.id === devId)
+    const nameBase = devItem ? (devItem.device.name || devItem.device.mac) : devName
+
+    let chartDirty = false  // 标记本轮是否有 series data 变化
+
+    // 对该设备推送的每个非空指标,维护独立 series
+    for (const metric of Object.keys(METRIC_META)) {
+      const raw = p[metric]
+      if (raw === null || raw === undefined) continue
+      const key = seriesKey(devId, metric)
+
+      // 懒初始化:首次见到该 key 时创建稳定对象
+      if (!rt[key]) {
+        const meta = METRIC_META[metric]
+        rt[key] = {
+          name: seriesName(nameBase, metric),
+          color: devColor,
+          yAxisIndex: meta.yAxisIndex,
+          data: []
+        }
+        seriesByKey[key] = rt[key]
+        // 加入 chartSeries 数组(保持同一数组引用)
+        chartSeries.value.value.push(rt[key])
+        chartDirty = true
+      } else {
+        // 设备改名时同步更新 name
+        const expectedName = seriesName(nameBase, metric)
+        if (rt[key].name !== expectedName) {
+          rt[key].name = expectedName
+          chartDirty = true
+        }
+      }
+
+      const arr = rt[key].data
+      // 时间戳去重:同毫秒的点直接更新值
+      if (arr.length && arr[arr.length - 1][0] === tsMs) {
+        arr[arr.length - 1][1] = Number(raw)
+      } else {
+        arr.push([tsMs, Number(raw)])
+      }
+      // 清理超出 30 分钟窗口的旧点(原地 splice,保持数组引用)
+      const cutoff = tsMs - WINDOW_MS
+      let cutIdx = 0
+      while (cutIdx < arr.length && arr[cutIdx][0] < cutoff) cutIdx++
+      if (cutIdx > 0) arr.splice(0, cutIdx)
+      chartDirty = true
     }
+
+    // 触发 LineChart 增量更新:替换 value 数组(数组内容仍是稳定对象引用)
+    // shallowRef 需要新对象触发 watch,这里只替换外层包装
+    if (chartDirty) {
+      chartSeries.value = { value: chartSeries.value.value }
+    }
+
     // 更新对应设备卡片的 latest
     const idx = devices.value.findIndex((d) => d.device.id === p.device_id)
     if (idx >= 0) {
       devices.value[idx].latest = { ...devices.value[idx].latest, ...p }
+      // 同步 device.type 到前端 device 对象(BUG1 反映)
+      if (p.device_type) {
+        devices.value[idx].device = { ...devices.value[idx].device, type: p.device_type }
+      }
     }
   })
-}
-
-function push(arr, item) {
-  arr.push(item)
-  if (arr.length > MAX_POINTS) arr.shift()
 }
 
 onMounted(async () => {
@@ -135,10 +269,11 @@ onMounted(async () => {
         <div>
           <div class="label-eyebrow">Realtime Stream</div>
           <h2 class="card-title display">实时数据流</h2>
+          <div class="axis-hint muted">左轴:温度/湿度 · 右轴:光照</div>
         </div>
         <div class="legend" role="group" aria-label="切换数据系列">
           <button
-            v-for="s in SERIES_KEYS"
+            v-for="s in legendItems"
             :key="s.key"
             type="button"
             class="lg"
@@ -146,12 +281,12 @@ onMounted(async () => {
             :title="isSeriesVisible(s.name) ? '点击隐藏' : '点击显示'"
             @click="toggleSeries(s.name)"
           >
-            <i :style="{ background: s.color }"></i>{{ s.key }}
+            <i :style="{ background: s.color }"></i>{{ s.name }}
           </button>
         </div>
       </div>
       <div class="chart-box">
-        <LineChart :series="displaySeries" />
+        <LineChart :series="displaySeries" :dual="useDualAxis" />
       </div>
     </section>
 
@@ -176,20 +311,20 @@ onMounted(async () => {
                 {{ item.latest?.device_status === 'active' ? '活跃' : '休眠' }}
               </span>
             </div>
-            <div class="dc-mac mono">{{ item.device.mac }}</div>
+            <div class="dc-mac-row">
+              <div class="dc-mac mono">{{ item.device.mac }}</div>
+              <span v-if="item.device.type" class="dc-type-badge" :title="`设备类型:${item.device.type}`">
+                {{ item.device.type }}
+              </span>
+            </div>
 
             <div class="dc-reads">
-              <div class="read">
-                <div class="read-label label-eyebrow">温度</div>
-                <div class="read-val mono"><b>{{ fmt(item.latest?.temperature) }}</b><span>°C</span></div>
-              </div>
-              <div class="read">
-                <div class="read-label label-eyebrow">湿度</div>
-                <div class="read-val mono"><b>{{ fmt(item.latest?.humidity) }}</b><span>%</span></div>
-              </div>
-              <div class="read">
-                <div class="read-label label-eyebrow">光照</div>
-                <div class="read-val mono"><b>{{ item.latest?.light ?? '—' }}</b><span>lx</span></div>
+              <div v-for="m in devMetrics(item)" :key="m" class="read">
+                <div class="read-label label-eyebrow">{{ METRIC_RENDER[m].label }}</div>
+                <div class="read-val mono">
+                  <b>{{ fmt(item.latest?.[m], METRIC_RENDER[m].digits) }}</b>
+                  <span>{{ METRIC_RENDER[m].unit }}</span>
+                </div>
               </div>
               <div class="read">
                 <div class="read-label label-eyebrow">LED</div>
@@ -297,9 +432,17 @@ onMounted(async () => {
   font-weight: 400;
   margin-top: 4px;
 }
+.axis-hint {
+  font-size: 11px;
+  margin-top: 6px;
+  letter-spacing: 0.02em;
+}
 .legend {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 60%;
+  justify-content: flex-end;
 }
 .lg {
   display: inline-flex;
@@ -460,12 +603,29 @@ onMounted(async () => {
   background: var(--paper-deep);
   color: var(--ink-4);
 }
+.dc-mac-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  margin-bottom: 18px;
+}
 .dc-mac {
   font-size: 11px;
   color: var(--ink-4);
-  margin-top: 4px;
-  margin-bottom: 18px;
   letter-spacing: 0.04em;
+}
+.dc-type-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--sage-tint);
+  color: var(--sage-deep);
+  border: 1px solid var(--line-strong);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .dc-reads {
   display: grid;

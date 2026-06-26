@@ -16,11 +16,12 @@ const navItems = computed(() => {
     { idx: '01', label: '实时监控', name: 'home' },
     { idx: '02', label: '设备管理', name: 'devices' },
     { idx: '03', label: '历史曲线', name: 'history' },
-    { idx: '04', label: '预警中心', name: 'alerts' }
+    { idx: '04', label: '预警中心', name: 'alerts' },
+    { idx: '05', label: '智能预测', name: 'prediction' }
   ]
   if (userStore.isAdmin) {
-    base.push({ idx: '05', label: '订阅管理', name: 'subscription' })
-    base.push({ idx: '06', label: '日志管理', name: 'logs' })
+    base.push({ idx: '06', label: '订阅管理', name: 'subscription' })
+    base.push({ idx: '07', label: '日志管理', name: 'logs' })
   }
   return base
 })

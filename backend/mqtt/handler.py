@@ -130,12 +130,47 @@ class MqttHandler:
             socketio.emit("device_discovered", {"device": dev.to_dict()},
                           room=f"user_{gw.user_id}")
 
+    # ---------- 设备类型推断 ----------
+    # 设备 type 用 "/" 分隔多种数据类型,例如 "温度/湿度" 或 "温度/湿度/光照"
+    # 不将 led_status / device_status 计入 type,它们属于设备控制状态而非采集数据
+    _DATA_SUFFIX_LABELS = {
+        "temp": "温度",
+        "hum":  "湿度",
+        "light": "光照",
+    }
+
+    def _infer_device_type(self, dev, suffix):
+        """根据历史上报数据类型累积推断设备 type。
+
+        Returns:
+            str | None: 推断出的 type 字符串(如 "温度/湿度");若 suffix 不属于数据类型,返回 None
+        """
+        label = self._DATA_SUFFIX_LABELS.get(suffix)
+        if not label:
+            return None
+        # 解析当前已累积的类型
+        existing = []
+        if dev.type:
+            existing = [p.strip() for p in dev.type.split("/") if p.strip()]
+        if label not in existing:
+            existing.append(label)
+        # 按固定顺序排序输出(温→湿→光),保证稳定
+        order = ["温度", "湿度", "光照"]
+        existing = [x for x in order if x in existing]
+        return "/".join(existing) if existing else None
+
     def _handle_data(self, gw_uuid, mac, suffix, data):
         gw = Gateway.query.filter_by(gw_uuid=gw_uuid).first()
         if not gw or not gw.user_id:
             return  # 未绑定用户的网关数据不处理
         dev = self._get_or_create_device(gw, mac)
         dev.last_seen = datetime.now()
+
+        # BUG1: 根据收到的数据类型动态推断并更新设备 type
+        # 累积设备可上报的数据类型(温度/湿度/光照/LED/状态),覆盖原始静态 type
+        new_type = self._infer_device_type(dev, suffix)
+        if new_type and dev.type != new_type:
+            dev.type = new_type
         db.session.commit()
 
         field = topics.TOPIC_SUFFIX_TO_FIELD[suffix]
@@ -153,6 +188,7 @@ class MqttHandler:
             "gw_uuid": gw_uuid,
             "dev_mac": mac,
             "device_name": dev.name,
+            "device_type": dev.type,
             "temperature": rec.get("temperature"),
             "humidity": rec.get("humidity"),
             "light": rec.get("light"),

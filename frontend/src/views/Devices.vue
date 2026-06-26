@@ -241,7 +241,7 @@ onMounted(async () => {
               </button>
               <button
                 class="ctrl-btn st"
-                :class="{ on: !dev.device_status }"
+                :class="{ on: !!dev.device_status }"
                 @click="toggleStatus(dev)"
                 :title="dev.device_status ? '运行中 · 点击进入休眠' : '休眠中 · 点击唤醒'"
               >
@@ -446,11 +446,11 @@ onMounted(async () => {
   box-shadow: 0 0 6px rgba(255,255,255,0.8), 0 0 12px var(--sage-soft);
 }
 
-/* 休眠按钮:休眠中 = amber 实心;运行中 = 中性 */
+/* 状态按钮:活跃 = sage 绿色实心发光;休眠 = 中性灰 */
 .ctrl-btn.st.on {
-  background: var(--amber);
+  background: var(--sage);
   color: #06141a;
-  border-color: var(--amber);
+  border-color: var(--sage);
 }
 .ctrl-dot {
   width: 7px; height: 7px; border-radius: 50%;
@@ -459,7 +459,7 @@ onMounted(async () => {
 }
 .ctrl-btn.st.on .ctrl-dot {
   background: #fff;
-  box-shadow: 0 0 6px rgba(255,255,255,0.6);
+  box-shadow: 0 0 6px rgba(255,255,255,0.8), 0 0 12px var(--sage-soft);
 }
 
 /* 待审列表 */
