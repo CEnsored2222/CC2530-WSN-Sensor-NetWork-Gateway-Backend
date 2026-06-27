@@ -9,19 +9,17 @@ import threading
 
 
 class SerialWriter:
-    def __init__(self, serial_port=None, simulate=False):
+    def __init__(self, serial_port=None):
         """
-        :param serial_port: 已打开的串口对象(需提供 write());模拟模式下可为 None
-        :param simulate: 模拟模式,仅打印不下发
+        :param serial_port: 已打开的串口对象(需提供 write());为 None 时仅打印不下发
         """
         self._serial = serial_port
-        self._simulate = simulate
         self._lock = threading.Lock()
 
     def _write(self, text: str):
         data = (text + "\n").encode("utf-8")
-        if self._simulate or self._serial is None:
-            print(f"[SerialWriter] (模拟) 下发: {text}")
+        if self._serial is None:
+            print(f"[SerialWriter] 串口未就绪,丢弃: {text}")
             return
         with self._lock:
             self._serial.write(data)

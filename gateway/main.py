@@ -3,7 +3,7 @@
 
 启动流程(待审主题隔离):
 1. 读取/生成网关 UUID
-2. 打开串口(或启动模拟器)
+2. 打开串口
 3. 连接 EMQX,订阅本网关下行主题,发布注册请求
 4. 等待后端审批 -> 收到 approved 后启动串口监听/MAC超时/心跳/数据转发
 5. Ctrl+C 优雅退出
@@ -11,8 +11,6 @@
 运行:
   pip install -r requirements.txt
   python main.py
-  # 无硬件调试:
-  set SIMULATE_SERIAL=true && python main.py   (Windows)
 """
 import os
 import threading
@@ -42,23 +40,19 @@ def get_or_create_uuid() -> str:
 
 
 def open_serial():
-    """打开串口或创建模拟器。
-    :return: (serial_port, simulator)  simulator 为 None 表示真实串口
-    """
-    if config.SIMULATE_SERIAL:
-        sim = SerialSimulator()
-        print("[Gateway] 使用串口模拟器(无硬件调试模式)")
-        return sim, sim
+    """打开串口。
 
+    :return: serial_port 对象;打开失败返回 None
+    """
     try:
         import serial as pyserial
         port = pyserial.Serial(config.SERIAL_PORT, config.SERIAL_BAUDRATE, timeout=1)
         print(f"[Gateway] 已打开串口 {config.SERIAL_PORT}@{config.SERIAL_BAUDRATE}")
-        return port, None
+        return port
     except Exception as e:
         print(f"[Gateway] 串口打开失败 {config.SERIAL_PORT}: {e}")
         print("[Gateway] 串口不可用,仅运行 MQTT 部分(等待数据/指令)")
-        return None, None
+        return None
 
 
 def connect_mqtt(mqtt: GatewayMqttClient):
@@ -86,12 +80,11 @@ def main():
     gw_uuid = get_or_create_uuid()
     print(f"[Gateway] 网关 UUID = {gw_uuid}")
     print(f"[Gateway] EMQX = {config.EMQX_HOST}:{config.EMQX_PORT}")
-    print(f"[Gateway] 模拟串口 = {config.SIMULATE_SERIAL}")
 
-    serial_port, sim = open_serial()
+    serial_port = open_serial()
 
     # 串口写入器(下行指令由 MQTT cmd 主题触发)
-    serial_writer = SerialWriter(serial_port=serial_port, simulate=(serial_port is None))
+    serial_writer = SerialWriter(serial_port=serial_port)
 
     # 业务启动状态(防止重复启动)
     business_started = [False]
@@ -104,8 +97,6 @@ def main():
         if result == "approved" and not business_started[0]:
             business_started[0] = True
             print(f"[Gateway] 审批通过(绑定用户 user_id={user_id}),启动业务数据转发")
-            if sim:
-                sim.start()
             state_holder["mac_registry"].start()
             state_holder["serial_reader"].start()
             hb = threading.Thread(target=heartbeat_loop, args=(state_holder["mqtt"], running),
@@ -122,11 +113,6 @@ def main():
                 state_holder["mac_registry"].stop()
             except Exception as e:
                 print(f"[Gateway] 停止 mac_registry 异常: {e}")
-            if sim:
-                try:
-                    sim.stop()
-                except Exception:
-                    pass
             # 重新发布注册请求,回到待审列表等待用户再次审批
             state_holder["mqtt"].publish_register()
 
@@ -164,11 +150,11 @@ def main():
         print("\n[Gateway] 收到退出信号,正在停止...")
         running[0] = False
     finally:
-        _shutdown(serial_reader, mac_registry, sim, serial_port, mqtt)
+        _shutdown(serial_reader, mac_registry, serial_port, mqtt)
         print("[Gateway] 已停止")
 
 
-def _shutdown(serial_reader, mac_registry, sim, serial_port, mqtt):
+def _shutdown(serial_reader, mac_registry, serial_port, mqtt):
     try:
         serial_reader.stop()
     except Exception as e:
@@ -177,12 +163,7 @@ def _shutdown(serial_reader, mac_registry, sim, serial_port, mqtt):
         mac_registry.stop()
     except Exception as e:
         print(f"[Gateway] 停止 mac_registry 异常: {e}")
-    if sim:
-        try:
-            sim.stop()
-        except Exception:
-            pass
-    if serial_port is not None and sim is None:
+    if serial_port is not None:
         try:
             serial_port.close()
         except Exception:

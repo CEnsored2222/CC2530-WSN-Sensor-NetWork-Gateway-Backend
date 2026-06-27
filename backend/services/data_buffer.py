@@ -2,7 +2,7 @@
 """数据入库缓冲。
 
 后端订阅的温度/湿度/光照 实时通过 WebSocket 推送前端,同时缓冲每台设备的最新值,
-每 60s 批量 flush 到 sensor_data 表(去空 + 去重)。
+每 600s 批量 flush 到 sensor_data 表(去空 + 去重)。
 
 led_status / device_status 不入库,仅在 _latest 内存缓冲中保留(供实时查询与 WS 直推)。
 

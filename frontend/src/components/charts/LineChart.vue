@@ -15,6 +15,8 @@ const props = defineProps({
 
 const el = ref(null)
 let chart = null
+// 记录上一次渲染的 series name 集合,用于 detect 被移除的 series
+let lastSeriesNames = new Set()
 
 function readVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -143,9 +145,18 @@ function doRender() {
     // 数据按时间戳排序(避免乱序导致线条回跳)
     data: (s.data || []).slice().sort((a, b) => a[0] - b[0])
   }))
+  // 当前 series name 集合
+  const curNames = new Set(opt.series.map((s) => s.name))
+  // 移除已被删除的系列(ECharts merge 模式不会自动移除)
+  for (const name of lastSeriesNames) {
+    if (!curNames.has(name)) {
+      chart.setOption({ series: [{ name, data: [] }] }, false)
+    }
+  }
+  lastSeriesNames = curNames
   // 关键:普通 merge 模式(setOption 第二参数 false)
   // ECharts 会按 series.name 智能匹配新旧 series,只增量更新 data,不触发重绘
-  // 不使用 replaceMerge: ['series'](那会强制替换整个 series 数组导致重绘)
+  // 已通过上面循环手动移除不存在的 series
   chart.setOption(opt, false)
 }
 

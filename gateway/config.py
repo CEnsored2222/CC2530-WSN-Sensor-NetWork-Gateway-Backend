@@ -13,9 +13,6 @@ EMQX_KEEPALIVE = int(os.getenv("EMQX_KEEPALIVE", "60"))
 SERIAL_PORT = os.getenv("SERIAL_PORT", "COM1")
 SERIAL_BAUDRATE = int(os.getenv("SERIAL_BAUDRATE", "38400"))
 
-# 无硬件时开启模拟器(调试用)
-SIMULATE_SERIAL = os.getenv("SIMULATE_SERIAL", "false").lower() == "true"
-
 # ============ 网关标识 ============
 GW_UUID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gw_uuid.txt")
 

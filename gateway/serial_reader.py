@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""串口读取器:从串口(或模拟器)读取报文,解析后转发到 MQTT。
+"""串口读取器:从串口读取报文,解析后转发到 MQTT。
 
-串口对象需提供阻塞式 readline() -> bytes 接口(真实 pyserial.Serial
-与 SerialSimulator 均满足),便于无硬件时切换为模拟器调试。"""
+串口对象需提供阻塞式 readline() -> bytes 接口(pyserial.Serial 满足)。"""
 import threading
 import time
 

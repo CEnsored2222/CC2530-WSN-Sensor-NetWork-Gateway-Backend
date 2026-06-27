@@ -142,9 +142,6 @@ npm run dev
 ```bash
 cd gateway
 pip install -r requirements.txt
-
-# 无硬件调试
-set SIMULATE_SERIAL=true
 python main.py
 ```
 

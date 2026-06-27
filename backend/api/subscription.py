@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Blueprint, g, jsonify, request
 
 import extensions
-from extensions import db
+from extensions import db, socketio
 from models.gateway import Gateway
 from models.operation_log import OperationLog
 from models.subscription import Subscription
@@ -57,6 +57,9 @@ def toggle(metric):
             {"metrics": enabled, "ts": int(time.time())},
             qos=1, retain=True,
         )
+        # 通知前端清除已取消订阅的指标数据
+        socketio.emit("subscription_updated", {"enabled": enabled},
+                      room=f"user_{gw.user_id}")
 
     db.session.add(OperationLog(
         user_id=g.current_user.id, action="toggle_subscription",

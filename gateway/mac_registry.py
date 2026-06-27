@@ -50,7 +50,7 @@ class MacRegistry:
             return mac in self._macs
 
     def _check_loop(self):
-        """每秒扫描,超时 10s 的 MAC 剔除并触发回调。"""
+        """每秒扫描,超时 5s 的 MAC 剔除并触发回调。"""
         while self._running:
             now = time.time()
             expired = []

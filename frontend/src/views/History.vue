@@ -28,9 +28,6 @@ const metricMeta = computed(() => METRICS.find((m) => m.value === form.metric))
 
 // 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
 // 直接从中提取指标列表
-const METRIC_LABELS = {
-  temperature: '温度', humidity: '湿度', light: '光照',
-}
 function devMetrics(dev) {
   const t = dev?.type
   if (Array.isArray(t) && t.length) return t

@@ -22,6 +22,7 @@ from extensions import db, socketio
 import extensions
 from models.gateway import Gateway
 from models.device import Device
+from models.subscription import Subscription
 from mqtt import topics
 from services.alert_engine import alert_engine
 
@@ -184,20 +185,25 @@ class MqttHandler:
         # 缓冲并取该设备最新全部字段
         rec = extensions.data_buffer.update(dev.id, **{field: value, "_ts": ts})
 
-        # 实时推送(不入库)
-        socketio.emit("sensor_data", {
+        # 实时推送(不入库):按订阅表过滤已关闭的指标
+        enabled = {s.metric for s in Subscription.query.filter_by(subscribed=True).all()}
+        _FIELD_TO_METRIC = {
+            "temperature": "temperature", "humidity": "humidity", "light": "light",
+            "led_status": "led_status", "device_status": "device_status",
+        }
+        payload = {
             "device_id": dev.id,
             "gw_uuid": gw_uuid,
             "dev_mac": mac,
             "device_name": dev.name,
             "device_type": dev.type,
-            "temperature": rec.get("temperature"),
-            "humidity": rec.get("humidity"),
-            "light": rec.get("light"),
-            "led_status": rec.get("led_status"),
-            "device_status": rec.get("device_status"),
             "ts": ts,
-        }, room=f"user_{gw.user_id}")
+        }
+        for f, m in _FIELD_TO_METRIC.items():
+            val = rec.get(f)
+            payload[f] = val if m in enabled else None
+
+        socketio.emit("sensor_data", payload, room=f"user_{gw.user_id}")
 
         # 告警引擎:对当前设备最新字段集合评估启用规则
         try:

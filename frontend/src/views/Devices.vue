@@ -1,5 +1,6 @@
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listGateways, listPending, approve, reject, unbind } from '@/api/gateway'
 import { listDevices, bindDevice, deviceStream, sendCmd } from '@/api/device'
@@ -274,6 +275,18 @@ function offSocket() {
 onMounted(async () => {
   await loadGateways()
   onSocket()
+  // 从实时监控页面跳转过来时,高亮对应设备卡片
+  const route = useRoute()
+  const hid = route.query.highlight
+  if (hid) {
+    await nextTick()
+    const el = document.getElementById('dev-' + hid)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('dev-highlight')
+      setTimeout(() => el.classList.remove('dev-highlight'), 3000)
+    }
+  }
 })
 onBeforeUnmount(() => {
   offSocket()
@@ -330,6 +343,7 @@ onBeforeUnmount(() => {
           <article
             v-for="dev in gw.devices"
             :key="dev.id"
+            :id="'dev-' + dev.id"
             class="dev-card"
           >
             <div class="dc-row">
@@ -507,6 +521,15 @@ onBeforeUnmount(() => {
   transition: border-color 0.25s var(--ease);
 }
 .dev-card:hover { border-color: var(--sage); }
+.dev-highlight {
+  border-color: var(--sage) !important;
+  box-shadow: 0 0 0 3px var(--sage-soft);
+  animation: hl-pulse 0.6s ease-out 3;
+}
+@keyframes hl-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--sage-soft); }
+  50%      { box-shadow: 0 0 0 8px var(--sage-soft); }
+}
 .dc-row { display: flex; justify-content: space-between; align-items: center; }
 .dc-title { cursor: pointer; }
 .dc-title:hover .dc-name { color: var(--sage-deep); }

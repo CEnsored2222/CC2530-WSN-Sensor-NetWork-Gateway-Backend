@@ -31,19 +31,24 @@ const METRIC_META = {
   light:       { label: '光照', unit: 'lx', color: '#b58cf0', yAxisIndex: 1 }
 }
 
-// 设备颜色池:为不同设备分配不同色相,避免多设备同指标曲线颜色冲突
-const DEVICE_COLORS = ['#f5a35c', '#4dd6c1', '#b58cf0', '#7fa9ff', '#ff7a59',
-                       '#9ad96a', '#e36b8b', '#5ad1d8', '#d6a04a', '#8fa3d1']
+// 组合配色池:每个「设备×指标」组合独立配色,最大化区分度
+// 调色板在深/浅主题下均具可读性
+const COMBO_COLORS = [
+  '#f5a35c', '#4dd6c1', '#b58cf0', '#7fa9ff', '#ff7a59',
+  '#9ad96a', '#e36b8b', '#5ad1d8', '#d6a04a', '#8fa3d1',
+  '#ffb84d', '#33c9b0', '#a06bff', '#5b9bff', '#ff8a7a',
+  '#85c95a', '#d4516f', '#3fb8c0', '#c9912e', '#7a8cb8'
+]
 
-// 设备颜色映射:deviceId -> colorIndex
-const deviceColorMap = ref({})
-let colorCursor = 0
-function deviceColor(devId) {
-  if (!deviceColorMap.value[devId]) {
-    deviceColorMap.value[devId] = DEVICE_COLORS[colorCursor % DEVICE_COLORS.length]
-    colorCursor++
+// 组合颜色映射:key(`${devId}:${metric}`) -> color
+const comboColorMap = ref({})
+let comboCursor = 0
+function comboColor(key) {
+  if (!comboColorMap.value[key]) {
+    comboColorMap.value[key] = COMBO_COLORS[comboCursor % COMBO_COLORS.length]
+    comboCursor++
   }
-  return deviceColorMap.value[devId]
+  return comboColorMap.value[key]
 }
 
 // 图例:按「设备 × 指标」组合显示
@@ -57,23 +62,41 @@ function seriesName(deviceName, metric) {
   return `${deviceName || '未知'} · ${METRIC_META[metric].label}`
 }
 
-// 图例:按「设备 × 该设备实际采集指标」组合显示
-// 不为温/湿设备生成光照图例项,反之亦然
-const legendItems = computed(() => {
-  const items = []
-  for (const item of devices.value) {
+// 图例:两级结构
+//   一级 = 设备(hover 展开二级)
+//   二级 = 该设备下各指标(点击切换显隐)
+// 一级点击 = 切换该设备下全部指标的显隐
+const legendDevices = computed(() => {
+  return devices.value.map((item) => {
+    const devId = item.device.id
     const devName = item.device.name || item.device.mac
-    const devColor = deviceColor(item.device.id)
-    for (const m of devMetrics(item)) {
-      items.push({
-        key: seriesKey(item.device.id, m),
+    const metrics = devMetrics(item)
+    const items = metrics.map((m) => {
+      const key = seriesKey(devId, m)
+      return {
+        key,
         name: seriesName(devName, m),
-        color: devColor
-      })
-    }
-  }
-  return items
+        metric: m,
+        metricLabel: METRIC_META[m].label,
+        color: comboColor(key)
+      }
+    })
+    const allHidden = items.length > 0 && items.every((it) => !isSeriesVisible(it.name))
+    return { devId, devName, items, allHidden }
+  })
 })
+
+function toggleDeviceAll(devItem) {
+  const s = new Set(hiddenSeries.value)
+  // 若有任一隐藏 → 全部显示;否则全部隐藏
+  const anyHidden = devItem.items.some((it) => s.has(it.name))
+  if (anyHidden) {
+    devItem.items.forEach((it) => s.delete(it.name))
+  } else {
+    devItem.items.forEach((it) => s.add(it.name))
+  }
+  hiddenSeries.value = s
+}
 
 function toggleSeries(name) {
   const s = new Set(hiddenSeries.value)
@@ -103,8 +126,6 @@ async function load() {
     const [ov, rt2] = await Promise.all([overview(), realtime()])
     overviewData.value = ov
     devices.value = rt2.devices || []
-    // 预分配设备颜色
-    devices.value.forEach((d) => deviceColor(d.device.id))
   } finally {
     loading.value = false
   }
@@ -118,6 +139,10 @@ function fmt(v, d = 1) {
 // 设备是否处于活跃状态(同时兼容字符串 'active' 与数字 1)
 function isDeviceActive(status) {
   return status === 'active' || status === 1 || status === '1'
+}
+
+function goToDevice(deviceId) {
+  router.push({ name: 'devices', query: { highlight: deviceId } })
 }
 
 // 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
@@ -160,13 +185,16 @@ function onSocket() {
     const tsMs = (tsSec && !isNaN(tsSec)) ? tsSec * 1000 : Date.now()
     const devId = p.device_id
     const devName = p.device_name || (devices.value.find((d) => d.device.id === devId)?.device?.name) || '未知'
-    const devColor = deviceColor(devId)
 
     // 对该设备推送的每个非空指标,维护独立 series
     for (const metric of Object.keys(METRIC_META)) {
       const raw = p[metric]
-      if (raw === null || raw === undefined) continue
       const key = seriesKey(devId, metric)
+      if (raw === null || raw === undefined) {
+        // 后端推送 null → 指标已取消订阅,清除该 series 的 rt 数据
+        delete rt[key]
+        continue
+      }
       if (!rt[key]) rt[key] = []
       // 时间戳去重:同毫秒的点跳过(避免重复)
       const arr = rt[key]
@@ -194,6 +222,25 @@ function onSocket() {
       }
     }
   })
+
+  // 订阅切换事件:清除已取消订阅的指标 rt 数据
+  s.off('subscription_updated').on('subscription_updated', (data) => {
+    const enabled = new Set(data?.enabled || [])
+    const allMetrics = Object.keys(METRIC_META)
+    // led_status 和 device_status 也受订阅管理
+    allMetrics.push('led_status', 'device_status')
+    for (const metric of allMetrics) {
+      if (!enabled.has(metric)) {
+        // 删除所有设备下该指标的 rt 数据
+        for (const key of Object.keys(rt)) {
+          if (key.endsWith(':' + metric)) {
+            delete rt[key]
+          }
+        }
+      }
+    }
+    scheduleRebuild()
+  })
 }
 
 // 节流重建 seriesOut:用 requestAnimationFrame 合并同一帧内的多次 WS 推送
@@ -212,7 +259,7 @@ function scheduleRebuild() {
       const meta = METRIC_META[metric]
       seriesOut.push({
         name,
-        color: deviceColor(devIdNum),
+        color: comboColor(key),
         yAxisIndex: meta.yAxisIndex,
         // 直接引用 rt[key] 数组,LineChart setOption merge 模式只更新 data
         data
@@ -228,6 +275,7 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   getSocket().off('sensor_data')
+  getSocket().off('subscription_updated')
   if (rebuildRaf) {
     cancelAnimationFrame(rebuildRaf)
     rebuildRaf = null
@@ -269,18 +317,46 @@ onBeforeUnmount(() => {
           <h2 class="card-title display">实时数据流</h2>
           <div class="axis-hint muted">左轴:温度/湿度 · 右轴:光照</div>
         </div>
-        <div class="legend" role="group" aria-label="切换数据系列">
-          <button
-            v-for="s in legendItems"
-            :key="s.key"
-            type="button"
-            class="lg"
-            :class="{ off: !isSeriesVisible(s.name) }"
-            :title="isSeriesVisible(s.name) ? '点击隐藏' : '点击显示'"
-            @click="toggleSeries(s.name)"
+        <div class="legend2" role="group" aria-label="切换数据系列">
+          <div
+            v-for="d in legendDevices"
+            :key="d.devId"
+            class="lg-dev"
+            :class="{ off: d.allHidden }"
           >
-            <i :style="{ background: s.color }"></i>{{ s.name }}
-          </button>
+            <button
+              type="button"
+              class="lg-dev-btn"
+              :title="d.allHidden ? '点击显示该设备全部' : '点击隐藏该设备全部'"
+              @click="toggleDeviceAll(d)"
+            >
+              <span class="lg-dev-swatches">
+                <i
+                  v-for="it in d.items"
+                  :key="it.key"
+                  :style="{ background: it.color }"
+                  :class="{ dim: !isSeriesVisible(it.name) }"
+                ></i>
+              </span>
+              <span class="lg-dev-name">{{ d.devName }}</span>
+              <span class="lg-dev-caret">▾</span>
+            </button>
+            <div class="lg-pop" role="group">
+              <button
+                v-for="it in d.items"
+                :key="it.key"
+                type="button"
+                class="lg-metric"
+                :class="{ off: !isSeriesVisible(it.name) }"
+                :title="isSeriesVisible(it.name) ? '点击隐藏' : '点击显示'"
+                @click="toggleSeries(it.name)"
+              >
+                <i :style="{ background: it.color }"></i>
+                <span class="lg-metric-name">{{ it.metricLabel }}</span>
+                <span class="lg-metric-state">{{ isSeriesVisible(it.name) ? '显示' : '隐藏' }}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="chart-box">
@@ -296,12 +372,14 @@ onBeforeUnmount(() => {
       </div>
       <div class="dev-grid">
         <article
-          v-for="(item, i) in devices"
-          :key="item.device.id"
-          class="dev-card rise"
-          :class="{ sleeping: !isDeviceActive(item.latest?.device_status) }"
-          :style="{ animationDelay: 0.3 + i * 0.06 + 's' }"
-        >
+    v-for="(item, i) in devices"
+    :key="item.device.id"
+    class="dev-card rise"
+    :class="{ sleeping: !isDeviceActive(item.latest?.device_status) }"
+    :style="{ animationDelay: 0.3 + i * 0.06 + 's' }"
+    @click="goToDevice(item.device.id)"
+    title="点击跳转到设备管理页面"
+  >
           <div class="dc-content">
             <div class="dc-top">
               <div class="dc-name">{{ item.device.name || item.device.mac }}</div>
@@ -435,48 +513,139 @@ onBeforeUnmount(() => {
   margin-top: 6px;
   letter-spacing: 0.02em;
 }
-.legend {
+/* 两级图例:一级设备 hover 展开二级指标浮层 */
+.legend2 {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  max-width: 60%;
+  gap: 6px;
+  max-width: 62%;
   justify-content: flex-end;
 }
-.lg {
+.lg-dev {
+  position: relative;
+}
+.lg-dev-btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-size: 12px;
   color: var(--ink-3);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 5px 10px;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: color 0.2s var(--ease), background 0.2s var(--ease), border-color 0.2s var(--ease);
   font-family: var(--font-sans);
 }
-.lg:hover {
+.lg-dev-btn:hover {
   color: var(--ink);
   background: var(--sage-tint);
   border-color: var(--line-strong);
 }
-.lg i {
-  width: 9px;
+.lg-dev-swatches {
+  display: inline-flex;
+  gap: 2px;
+}
+.lg-dev-swatches i {
+  width: 8px;
   height: 9px;
   border-radius: 2px;
-  transition: all 0.2s var(--ease);
+  transition: opacity 0.2s var(--ease);
 }
-.lg.off {
+.lg-dev-swatches i.dim {
+  opacity: 0.25;
+}
+.lg-dev-name {
+  font-weight: 500;
+}
+.lg-dev-caret {
+  font-size: 9px;
+  color: var(--ink-4);
+  transition: transform 0.2s var(--ease);
+}
+.lg-dev:hover .lg-dev-caret,
+.lg-dev:focus-within .lg-dev-caret {
+  transform: rotate(180deg);
+  color: var(--ink-2);
+}
+.lg-dev.off .lg-dev-btn {
   color: var(--ink-5);
-  opacity: 0.65;
+  opacity: 0.7;
 }
-.lg.off i {
+.lg-dev.off .lg-dev-btn:hover {
+  opacity: 1;
+}
+
+/* 二级浮层 */
+.lg-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface-hi);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), visibility 0.18s;
+}
+.lg-dev:hover .lg-pop,
+.lg-dev:focus-within .lg-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.lg-metric {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+  font-family: var(--font-sans);
+}
+.lg-metric:hover {
+  background: var(--sage-tint);
+  color: var(--ink);
+}
+.lg-metric i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.lg-metric-name {
+  flex: 1;
+}
+.lg-metric-state {
+  font-size: 10px;
+  color: var(--ink-4);
+  letter-spacing: 0.04em;
+}
+.lg-metric.off {
+  color: var(--ink-5);
+}
+.lg-metric.off i {
   background: transparent !important;
   border: 1px dashed var(--ink-5);
 }
-.lg.off:hover {
-  opacity: 1;
+.lg-metric.off .lg-metric-state {
+  color: var(--ink-5);
 }
 .chart-box {
   height: 280px;
@@ -509,6 +678,7 @@ onBeforeUnmount(() => {
   transition: border-color 0.3s var(--ease), transform 0.3s var(--ease);
   position: relative;
   overflow: hidden;
+  cursor: pointer;
 }
 .dev-card:hover {
   border-color: var(--sage);
@@ -520,8 +690,8 @@ onBeforeUnmount(() => {
   border-color: var(--line-strong);
 }
 .dev-card.sleeping:hover {
-  border-color: var(--ink-5);
-  transform: translateY(-1px);
+  border-color: var(--sage);
+  transform: translateY(-2px);
 }
 
 /* 亚克力遮罩 */

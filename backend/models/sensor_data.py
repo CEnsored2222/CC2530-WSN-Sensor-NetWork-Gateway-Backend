@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据表(温度/湿度/光照)
-后端订阅采集数据每 60s 入库一次(去空 + 去重)。
+后端订阅采集数据每 600s 入库一次(去空 + 去重)。
 
 注:led_status / device_status 不入库,仅由后端订阅 led/status 主题后
 通过 data_buffer 内存缓冲 + WebSocket 直推前端(实时状态管理)。
