@@ -9,3 +9,6 @@ bcrypt>=4.1
 scikit-learn>=1.4
 numpy>=1.26
 pandas>=2.1
+# MLP 机器学习模块依赖(torch 需单独安装 CPU/GPU 版本: pip install torch --index-url https://download.pytorch.org/whl/cpu)
+onnx>=1.14
+onnxruntime>=1.16

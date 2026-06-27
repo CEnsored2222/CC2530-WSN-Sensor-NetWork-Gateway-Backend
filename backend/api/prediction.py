@@ -20,6 +20,7 @@ bp = Blueprint("prediction", __name__)
 
 _VALID_METRICS = ("temperature", "humidity", "light")
 _VALID_MODELS = ("linear", "svr")
+_MLP_MODELS = ("mlp_temp_hum", "mlp_light")
 # 默认拉取最近 144 条历史数据(10min/条 × 144 = 24 小时)
 _DEFAULT_LOOKBACK = 144
 
@@ -73,16 +74,67 @@ def run_prediction():
 
     if not device_id:
         return jsonify({"error": "device_id 必填"}), 400
-    if metric not in _VALID_METRICS:
+    if model_name not in _VALID_MODELS and model_name not in _MLP_MODELS:
+        return jsonify({"error": f"model_name 必须为 {_VALID_MODELS + _MLP_MODELS} 之一"}), 400
+    # metric 必填仅 for linear/svr; mlp_* 多输出模型忽略 metric
+    if model_name in _VALID_MODELS and metric not in _VALID_METRICS:
         return jsonify({"error": f"metric 必须为 {_VALID_METRICS} 之一"}), 400
-    if model_name not in _VALID_MODELS:
-        return jsonify({"error": f"model_name 必须为 {_VALID_MODELS} 之一"}), 400
 
     dev, err = _device_or_404(device_id)
     if err:
         return err
 
-    # 拉取历史数据
+    # ===== MLP 分流(mlp_temp_hum / mlp_light)=====
+    if model_name in _MLP_MODELS:
+        import extensions as ext_mod
+        from config import Config
+        from models.ml import MlModel
+        trainer = getattr(ext_mod, "onnx_trainer", None)
+        if trainer is None:
+            return jsonify({"error": "MLP 模块未安装(PyTorch/onnxruntime 不可用)"}), 503
+        ml_model = MlModel.query.get(model_name)
+        if not ml_model or not ml_model.last_train_time:
+            return jsonify({"error": "模型未训练,请先 POST /api/predictions/mlp/train"}), 400
+        # 按 MLP_LOOKBACK_HOURS 拉取该设备历史数据(单设备推理,非多设备聚合)
+        since = datetime.now() - timedelta(hours=Config.MLP_LOOKBACK_HOURS)
+        db_rows = (SensorData.query
+                   .filter_by(device_id=dev.id)
+                   .filter(SensorData.recorded_at >= since)
+                   .order_by(SensorData.recorded_at)
+                   .all())
+        row_dicts = [{"recorded_at": r.recorded_at,
+                       "temperature": r.temperature,
+                       "humidity": r.humidity,
+                       "light": r.light} for r in db_rows]
+        if not row_dicts:
+            return jsonify({"error": "无历史数据"}), 400
+        try:
+            result = trainer.predict(model_name, row_dicts)
+        except Exception as e:
+            return jsonify({"error": f"MLP 推理失败: {str(e)}"}), 500
+        if "error" in result:
+            return jsonify(result), 400
+        # 多输出单事务写入(修复 P1 #8: mlp_temp_hum 写 2 条,任一失败全部回滚)
+        preds = []
+        for metric_name, pred_data in result.items():
+            preds.append(Prediction(
+                device_id=dev.id,
+                metric=metric_name,
+                horizon_minutes=Config.MLP_DEFAULT_HORIZON,
+                predicted_values=pred_data["predicted_values"],
+                history_snapshot=pred_data["history_snapshot"],
+                model_name=model_name,
+                mae=None, r2=None,
+            ))
+            db.session.add(preds[-1])
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            return jsonify({"error": "预测结果保存失败"}), 500
+        return jsonify([p.to_dict() for p in preds]), 201
+
+    # ===== linear / svr 原有流程(不变)=====
     history = _fetch_history(dev.id, limit=int(lookback))
     if len(history) < predictor.MIN_SAMPLES:
         return jsonify({

@@ -55,6 +55,12 @@ desktop.ini
 # Trae
 .trae/
 
+# CodeBuddy
+.codebuddy/
+
+# 实施计划文档(审查过程记录,不入库)
+MLP_ONNX_Implementation_Plan.md
+
 # Temporary files
 *.tmp
 *.bak

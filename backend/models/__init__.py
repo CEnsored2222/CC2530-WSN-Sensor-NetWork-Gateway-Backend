@@ -6,5 +6,7 @@ from models.device import Device
 from models.sensor_data import SensorData
 from models.subscription import Subscription
 from models.operation_log import OperationLog
+from models.ml import MlModel, MlEvaluation
 
-__all__ = ["User", "Gateway", "Device", "SensorData", "Subscription", "OperationLog"]
+__all__ = ["User", "Gateway", "Device", "SensorData", "Subscription",
+           "OperationLog", "MlModel", "MlEvaluation"]
