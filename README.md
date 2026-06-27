@@ -16,7 +16,7 @@
 │  后端  Python Flask + Flask-SocketIO             │
 │  REST API · MQTT 订阅 · WS 推送 · 机器学习预测    │
 │  ┌──────────────────────────────────────────┐    │
-│  │  MySQL 8.0 · 9 张表 · 10 分钟节流入库     │    │
+│  │  MySQL 8.0 · 11 张表 · 10 分钟节流入库    │    │
 │  └──────────────────────────────────────────┘    │
 └──────────────────────▲──────────────────────────┘
                  MQTT 3.1.1
@@ -41,7 +41,7 @@
 | 后端 | Python Flask + Flask-SocketIO + Flask-CORS |
 | 数据库 | MySQL 8.0 + SQLAlchemy ORM |
 | 认证 | JWT (PyJWT + bcrypt) |
-| 机器学习 | Scikit-learn (LinearRegression / SVR) + NumPy |
+| 机器学习 | Scikit-learn (LinearRegression / SVR) + PyTorch + ONNX Runtime + NumPy |
 | 前端 | Vue 3 + Vite + Element Plus + ECharts |
 | 网关 | Python pyserial + paho-mqtt |
 
@@ -78,7 +78,7 @@ docker compose logs -f backend
 | 前端 | http://服务器IP/ | 浏览器访问 |
 | 后端 API | http://服务器IP:5000/api/health | 健康检查 |
 | EMQX Dashboard | http://服务器IP:18083 | 默认 admin / public |
-| MySQL | 服务器IP:3306 | 默认 root / root123 |
+| MySQL | 服务器IP:3306 | 默认 root / root1234 |
 
 数据库会在 MySQL 容器首次启动时自动执行 [backend/init_db.sql](backend/init_db.sql) 完成建表与默认数据初始化。
 
@@ -111,7 +111,7 @@ docker compose up -d --build     # 代码更新后重新构建
 mysql -u root -p < backend/init_db.sql
 ```
 
-脚本会创建 `smart_home` 库及全部 9 张表，并插入默认订阅数据。
+脚本会创建 `smart_home` 库及全部 11 张表，并插入默认订阅数据。
 
 ### 2. 启动后端
 
@@ -164,7 +164,7 @@ python main.py
 | **设备管理** | `/devices` | 网关审批/解绑、设备命名绑定、LED/休眠下发控制 |
 | **历史曲线** | `/history` | 按设备·指标·时间范围查询历史趋势，支持 CSV 导出 |
 | **告警管理** | `/alerts` | 阈值规则 CRUD、支持双条件组合逻辑、三级 severity |
-| **智能预测** | `/prediction` | 即时训练预测，LinearRegression / SVR 可选，历史预测记录 |
+| **智能预测** | `/prediction` | 即时训练预测，LinearRegression / SVR / MLP ONNX 可选，历史预测记录 |
 | **订阅管理** | `/admin/subscription` | 管理员控制后端 MQTT 订阅的数据类型 |
 | **操作日志** | `/admin/logs` | 管理员查看用户操作审计记录 |
 
@@ -183,6 +183,8 @@ python main.py
 | `predictions` | 预测结果表（JSON 预测点 + 历史快照） |
 | `subscriptions` | 订阅管理表 |
 | `operation_logs` | 操作日志表 |
+| `ml_models` | MLP 模型元数据表（模型类型/版本/文件路径/训练时间） |
+| `ml_evaluations` | MLP 模型评估记录表（MAE/R²/留出集指标 JSON） |
 
 **一键建库**: `mysql -u root -p < backend/init_db.sql`
 
@@ -212,20 +214,41 @@ smart_home/gateway/{gw_uuid}/
 
 ## 机器学习预测
 
-### 算法
+系统提供两套独立的预测引擎，分别适用于轻量即时预测与高精度持续学习场景。
+
+### 引擎一：Scikit-learn 即时预测（`/prediction`）
 
 | 模型 | 说明 |
 |------|------|
 | **LinearRegression** | 线性回归基线模型，适合趋势明显的数据 |
 | **SVR (RBF)** | 支持向量回归，能捕捉非线性周期波动 |
 
-### 实现特点
+实现特点：
 
 - **多变量特征**：每条记录构造 `[t_sec, temperature, humidity, light]` 4 维特征
 - **递归多步预测**：预测 t+10 / t+20 / ... / t+60 分钟，上一步预测值影响下一步
 - **即时训练**：每次点击从数据库拉取 144 条（~24h）历史数据，即训即测
 - **评估指标**：MAE（平均绝对误差）+ R²（决定系数）
 - **前端可视化**：历史实线 + 预测橙色虚线 双线对比图
+
+### 引擎二：MLP ONNX 持续学习管线（`/api/mlp`）
+
+基于 PyTorch 训练 + ONNX 导出 + onnxruntime 推理的三阶段管线，由后台调度器自动维护。
+
+| 模型类型 | 输入特征 | 输出 |
+|------|------|------|
+| `mlp_temp_hum` | `[t_sec, temperature, humidity]` | 未来 6 步温湿度（10~60min） |
+| `mlp_light` | `[t_sec, light]` | 未来 6 步光照（10~60min） |
+
+实现特点：
+
+- **预训练**：取最近 48h 数据训练 MLP，导出 ONNX + `scaler.json` + `.prev` 回滚备份
+- **6 步原子写入**：`.pt.tmp` → `.onnx.tmp` → `scaler.json.tmp` → 校验 → prev 退位 → 原子替换，断电可恢复
+- **自动微调**：调度器每 30min 检查，新数据 ≥15 条则用 ring buffer 微调 5 epoch（小学习率 1e-5）
+- **评估触发**：微调后在同子线程立即评估，留出集后 20%，写入 `ml_evaluations` 表
+- **推理缓存**：onnxruntime Session 缓存复用，避免重复加载开销
+- **线程安全 ring buffer**：每设备保留 800 条（~40min @3s/条），供微调与推理快速读取
+- **优雅降级**：PyTorch / onnxruntime 未安装时 MLP 引擎静默关闭，不影响 Scikit-learn 引擎
 
 ---
 
@@ -234,17 +257,23 @@ smart_home/gateway/{gw_uuid}/
 ```
 End/
 ├── backend/              # Flask 后端
-│   ├── api/              # REST 蓝图 (auth/gateway/device/data/alert/prediction/subscription)
-│   ├── models/           # SQLAlchemy 模型
+│   ├── api/              # REST 蓝图 (auth/gateway/device/data/alert/prediction/mlp/subscription)
+│   ├── models/           # SQLAlchemy 模型 (含 ml.py MLP 元数据表)
 │   ├── mqtt/             # MQTT 客户端 & 消息分发处理器
-│   ├── ml/               # 机器学习预测模块
-│   ├── services/         # 告警引擎 & 数据入库缓冲
+│   ├── ml/               # 机器学习模块
+│   │   ├── mlp_models.py     # MLP 网络结构 (PyTorch)
+│   │   ├── onnx_trainer.py   # 训练/微调/评估/推理/原子写入
+│   │   ├── scheduler.py      # 后台调度器 (微调+评估触发)
+│   │   └── models/           # 模型文件目录 (.onnx/.pt/scaler.json)
+│   ├── services/         # 告警引擎 & 数据入库缓冲 & ring buffer
 │   ├── ws/               # WebSocket 事件推送
 │   ├── utils/            # JWT 鉴权工具
+│   ├── tests/            # pytest 单元测试 (66 用例)
 │   ├── app.py            # 应用工厂入口
-│   ├── config.py         # 配置（环境变量覆盖）
-│   ├── init_db.sql       # 数据库一键初始化脚本
-│   └── requirements.txt
+│   ├── config.py         # 配置（环境变量覆盖 + 19 个 MLP_* 参数）
+│   ├── init_db.sql       # 数据库一键初始化脚本 (11 张表)
+│   ├── requirements.txt      # 生产依赖
+│   └── requirements-dev.txt # 开发依赖 (pytest 等)
 ├── frontend/             # Vue 3 前端
 │   └── src/
 │       ├── views/        # 页面组件 (Home/Devices/History/Alerts/Prediction/Login + admin/)
