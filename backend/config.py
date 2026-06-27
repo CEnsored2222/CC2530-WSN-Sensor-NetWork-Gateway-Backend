@@ -4,6 +4,9 @@ import os
 
 
 class Config:
+    # ============ 版本 ============
+    VERSION = "2.2"
+
     # ============ Flask ============
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
