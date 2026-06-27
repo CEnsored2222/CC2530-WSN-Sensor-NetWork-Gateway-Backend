@@ -54,5 +54,5 @@ class Config:
     MLP_EVAL_SPLIT_RATIO = 0.2           # 评估留出集比例(后20%)
     MLP_RING_BUFFER_CAPACITY = 800       # 每设备保留条数(约40min @3s/条)
     MLP_SCHEDULER_CHECK_INTERVAL = 60    # 调度器检查间隔
-    MLP_MODELS_DIR = "backend/ml/models"  # 模型文件根目录
+    MLP_MODELS_DIR = "ml/models"  # 模型文件根目录(相对于 backend 运行目录)
     MLP_ONNX_OPSET_VERSION = 14          # ONNX 导出 opset 版本
