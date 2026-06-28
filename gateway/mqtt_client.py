@@ -14,6 +14,7 @@ import time
 import paho.mqtt.client as mqtt
 
 import config
+from log_handler import log
 from state import gateway_state
 
 
@@ -94,7 +95,7 @@ class GatewayMqttClient:
         # paho 2.x rc 为 ReasonCode,2.x/1.x 均可判断真值
         ok = (str(rc) == "0" or str(rc).upper() == "SUCCESS" or int(getattr(rc, "value", 0)) == 0)
         if ok:
-            print("[MQTT] 已连接 EMQX")
+            log("[MQTT] 已连接 EMQX", "SUCCESS")
             # 订阅下行主题
             topics = [
                 self._gw_topic("register/resp"),
@@ -103,18 +104,18 @@ class GatewayMqttClient:
             ]
             for t in topics:
                 client.subscribe(t, qos=1)
-                print(f"[MQTT] 订阅 {t}")
+                log(f"[MQTT] 订阅 {t}")
         else:
-            print(f"[MQTT] 连接失败 rc={rc}")
+            log(f"[MQTT] 连接失败 rc={rc}", "ERROR")
 
     def _on_disconnect(self, client, userdata, rc, *args):
-        print(f"[MQTT] 断开连接 rc={rc},将自动重连")
+        log(f"[MQTT] 断开连接 rc={rc},将自动重连", "WARN")
 
     def _on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except Exception as e:
-            print(f"[MQTT] 解析消息失败 topic={msg.topic} err={e}")
+            log(f"[MQTT] 解析消息失败 topic={msg.topic} err={e}", "ERROR")
             return
 
         topic = msg.topic
@@ -126,23 +127,23 @@ class GatewayMqttClient:
             elif topic.endswith("/subscription"):
                 self._handle_subscription(payload)
             else:
-                print(f"[MQTT] 未知主题 {topic}")
+                log(f"[MQTT] 未知主题 {topic}", "WARN")
         except Exception as e:
-            print(f"[MQTT] 处理消息异常 topic={topic} err={e}")
+            log(f"[MQTT] 处理消息异常 topic={topic} err={e}", "ERROR")
 
     def _handle_register_resp(self, payload):
         result = payload.get("result")
         user_id = payload.get("user_id")
         if result == "approved":
             gateway_state.set_approved(True)
-            print(f"[MQTT] 网关已审批通过,绑定用户 user_id={user_id}")
+            log(f"[MQTT] 网关已审批通过,绑定用户 user_id={user_id}", "SUCCESS")
         elif result == "revoked":
             gateway_state.set_approved(False)
-            print("[MQTT] 网关审批已被撤销,停止业务数据转发")
+            log("[MQTT] 网关审批已被撤销,停止业务数据转发", "WARN")
         if self._reg_resp_handler:
             self._reg_resp_handler(result, user_id)
         else:
-            print(f"[MQTT] 网关审批结果: {result}")
+            log(f"[MQTT] 网关审批结果: {result}")
 
     def _handle_cmd(self, topic, payload):
         # topic: .../device/{dev_mac}/cmd
@@ -150,7 +151,7 @@ class GatewayMqttClient:
         dev_mac = parts[-2] if len(parts) >= 2 else ""
         cmd = payload.get("cmd")
         value = payload.get("value")
-        print(f"[MQTT] 收到下行指令 dev={dev_mac} cmd={cmd} value={value}")
+        log(f"[MQTT] 收到下行指令 dev={dev_mac} cmd={cmd} value={value}")
         if self._cmd_handler:
             self._cmd_handler(dev_mac, cmd, value)
 
@@ -159,7 +160,7 @@ class GatewayMqttClient:
         self._set_enabled_metrics(metrics)
         if self._sub_handler:
             self._sub_handler(self._enabled_metrics)
-        print(f"[MQTT] 订阅配置更新 enabled={self._enabled_metrics}")
+        log(f"[MQTT] 订阅配置更新 enabled={self._enabled_metrics}")
 
     # ---------- 上行发布 ----------
     def _publish(self, topic, payload, qos=0, retain=False):
@@ -180,13 +181,13 @@ class GatewayMqttClient:
             "ts": _now(),
         }
         self._publish(self._gw_topic("register"), payload, qos=1, retain=False)
-        print("[MQTT] 已发布注册请求,等待后端审批...")
+        log("[MQTT] 已发布注册请求,等待后端审批...")
 
     def publish_discovery(self, dev_mac):
         self._publish(self._dev_topic(dev_mac, "discovery"),
                       {"dev_mac": dev_mac, "ts": _now()},
                       qos=1, retain=True)
-        print(f"[MQTT] 发布设备发现 {dev_mac}")
+        log(f"[MQTT] 发布设备发现 {dev_mac}", "SUCCESS")
 
     def publish_temperature(self, dev_mac, value):
         self._publish_dev(dev_mac, "temperature", "temperature", value)

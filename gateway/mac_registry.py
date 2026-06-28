@@ -2,24 +2,29 @@
 """设备 MAC 列表维护。
 本地网关维护一个 MAC 列表,用于判断设备状态:
 - 新 MAC 加入时由调用方发布 active
-- 某设备 MAC_TIMEOUT_SECONDS(默认 5s)内未发数据则从列表剔除并触发 on_remove 回调
+- 某设备 timeout_seconds(默认 5s)内未发数据则从列表剔除并触发 on_remove 回调
   (由调用方发布 sleep)
 
 设备状态判断两种方式(均在本地网关完成):
-1. 新 MAC 出现 + 5s 内无新数据 → sleep
+1. 新 MAC 出现 + timeout_seconds 内无新数据 → sleep
 2. 收到控制指令成功执行的反馈 → 改变状态(由 serial_reader 处理)
 """
 import threading
 import time
 
-from config import MAC_TIMEOUT_SECONDS
+from log_handler import log
 
 
 class MacRegistry:
-    def __init__(self, on_remove=None):
+    def __init__(self, timeout_seconds=5, on_remove=None):
+        """
+        :param timeout_seconds: 设备 MAC 无数据超时秒数，超时后触发 on_remove
+        :param on_remove: 超时剔除回调 callback(mac)
+        """
         # mac -> last_seen 时间戳
         self._macs = {}
         self._lock = threading.Lock()
+        self._timeout_seconds = timeout_seconds
         # 设备超时剔除时的回调:callback(mac)
         self._on_remove = on_remove
         self._running = False
@@ -40,7 +45,7 @@ class MacRegistry:
 
     def force_remove(self, mac: str):
         """主动移除 MAC(不触发 on_remove 回调)。
-        用于设备主动休眠:避免 5s 超时后再触发一次 sleep 发布。
+        用于设备主动休眠:避免 timeout_seconds 超时后再触发一次 sleep 发布。
         """
         with self._lock:
             self._macs.pop(mac, None)
@@ -49,14 +54,19 @@ class MacRegistry:
         with self._lock:
             return mac in self._macs
 
+    def count(self) -> int:
+        """返回当前活跃设备数。"""
+        with self._lock:
+            return len(self._macs)
+
     def _check_loop(self):
-        """每秒扫描,超时 5s 的 MAC 剔除并触发回调。"""
+        """每秒扫描,超时的 MAC 剔除并触发回调。"""
         while self._running:
             now = time.time()
             expired = []
             with self._lock:
                 for mac, last in list(self._macs.items()):
-                    if now - last > MAC_TIMEOUT_SECONDS:
+                    if now - last > self._timeout_seconds:
                         expired.append(mac)
                         del self._macs[mac]
             for mac in expired:
@@ -64,7 +74,7 @@ class MacRegistry:
                     try:
                         self._on_remove(mac)
                     except Exception as e:
-                        print(f"[MacRegistry] 超时回调异常: {e}")
+                        log(f"[MacRegistry] 超时回调异常: {e}", "ERROR")
             time.sleep(1)
 
     def start(self):
