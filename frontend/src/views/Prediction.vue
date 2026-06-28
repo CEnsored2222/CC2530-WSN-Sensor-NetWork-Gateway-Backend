@@ -42,7 +42,9 @@ const isMLP = computed(() => form.model_name.startsWith('mlp_'))
 
 // MLP 模型管理状态
 const trainLoading = ref(false)
+const evaluateLoading = ref(false)
 const mlpStatusData = ref(null)
+const finetuneActive = ref(false)  // 微调按钮 toggle 状态
 
 // MLP 模式下用 currentPrediction.metric(后端返回),传统模式用 form.metric
 const metricMeta = computed(() => {
@@ -68,6 +70,15 @@ const availableMetrics = computed(() => {
   return METRICS.filter((m) => allow.includes(m.value))
 })
 
+// 根据当前 metric 过滤可选模型(mlp_temp_hum 仅温湿度,mlp_light 仅光照)
+const availableModels = computed(() => {
+  return MODELS.filter((m) => {
+    if (m.value === 'mlp_temp_hum') return ['temperature', 'humidity'].includes(form.metric)
+    if (m.value === 'mlp_light') return form.metric === 'light'
+    return true  // linear, svr 对所有 metric 都可选
+  })
+})
+
 // 构建双线 series:历史(实线)+ 预测(虚线高亮)
 const chartSeries = shallowRef({ value: [] })
 function buildSeries(pred) {
@@ -83,13 +94,16 @@ function buildSeries(pred) {
     return [{
       name: `${meta.label} (${meta.unit})`,
       color: meta.color,
-      data: times.map((t, i) => [t.replace(' *', ''), values[i]]),
+      data: times.map((t, i) => [(typeof t === 'string' ? t.replace(' *', '') : t), values[i]]),
     }]
   }
-  // 历史段 + 包含最后一个点用于衔接
-  const histTimes = times.slice(0, splitIdx)
-  const histVals = values.slice(0, splitIdx)
-  const futTimes = times.slice(splitIdx).map((t) => t.replace(' *', ''))
+  // 历史段包含分割点用于衔接(避免历史与预测之间出现空白)
+  // 关键:历史段的分割点也要去除 ' *' 后缀,否则 ECharts type:'time' 会把
+  // "2026-06-28 14:00:00 *" 和 "2026-06-28 14:00:00" 解析成不同 x 坐标,
+  // 导致历史曲线与预测曲线之间出现空白间隙
+  const histTimes = times.slice(0, splitIdx + 1).map((t) => (typeof t === 'string' ? t.replace(' *', '') : t))
+  const histVals = values.slice(0, splitIdx + 1)
+  const futTimes = times.slice(splitIdx).map((t) => (typeof t === 'string' ? t.replace(' *', '') : t))
   const futVals = values.slice(splitIdx)
   return [
     {
@@ -106,15 +120,13 @@ function buildSeries(pred) {
   ]
 }
 
-// 预测数据点表格
+// 预测数据点表格(按时间步数值升序排列)
 const forecastTable = computed(() => {
   if (!currentPrediction.value?.predicted_values) return []
   const meta = METRICS.find((m) => m.value === currentPrediction.value.metric) || METRICS[0]
-  return Object.entries(currentPrediction.value.predicted_values).map(([k, v]) => ({
-    step: k,
-    value: v,
-    unit: meta.unit,
-  }))
+  return Object.entries(currentPrediction.value.predicted_values)
+    .map(([k, v]) => ({ step: k, value: v, unit: meta.unit }))
+    .sort((a, b) => parseInt(a.step.replace('t+', '')) - parseInt(b.step.replace('t+', '')))
 })
 
 // 评估指标说明
@@ -158,8 +170,7 @@ async function loadLatestAndHistory() {
       Promise.all(latestReqs),
       predictionHistory({
         device_id: form.device_id,
-        // 传统模式按 metric 过滤;MLP 模式查看该模型所有 metric 的记录
-        ...(isMLP.value ? {} : { metric: form.metric }),
+        metric: form.metric,  // 始终按当前 metric 过滤,避免历史记录混淆
         model_name: form.model_name,
         limit: 10,
       }),
@@ -167,8 +178,9 @@ async function loadLatestAndHistory() {
 
     if (isMLP.value) {
       const filtered = latestArr.filter(Boolean)
-      currentPrediction.value = filtered[0] || null
       mlpPredictions.value = filtered.length ? filtered : null
+      // 根据当前 metric 选主展示对象
+      currentPrediction.value = filtered.find((p) => p.metric === form.metric) || filtered[0] || null
     } else {
       currentPrediction.value = latestArr[0] || null
       mlpPredictions.value = null
@@ -196,9 +208,9 @@ async function run() {
     })
 
     if (isMLP.value) {
-      // MLP 返回数组,取第一个对象作为主展示;mlpPredictions 保存全部
-      currentPrediction.value = result[0]
+      // MLP 返回数组,根据当前 metric 选主展示;mlpPredictions 保存全部
       mlpPredictions.value = result
+      currentPrediction.value = result.find((p) => p.metric === form.metric) || result[0]
     } else {
       currentPrediction.value = result
       mlpPredictions.value = null
@@ -227,8 +239,22 @@ watch(() => form.device_id, () => {
   loadLatestAndHistory()
 })
 watch(() => form.metric, () => {
-  // MLP 模式下 metric 选择器隐藏,不触发加载
-  if (!isMLP.value) loadLatestAndHistory()
+  // 当前模型不在可选列表时降级到 linear(model_name watch 会触发加载)
+  const ok = availableModels.value.some((m) => m.value === form.model_name)
+  if (!ok) {
+    form.model_name = 'linear'
+    return
+  }
+  // MLP 模式且已有缓存:从缓存切换展示,无需重新请求
+  if (isMLP.value && mlpPredictions.value) {
+    const target = mlpPredictions.value.find((p) => p.metric === form.metric)
+    if (target) {
+      currentPrediction.value = target
+      chartSeries.value = { value: buildSeries(target) }
+      return
+    }
+  }
+  loadLatestAndHistory()
 })
 // 切换模型时加载对应最新历史 + MLP 状态
 watch(() => form.model_name, () => {
@@ -264,15 +290,23 @@ async function trainMLP() {
 }
 
 async function finetuneMLP() {
+  // toggle:已激活则关闭
+  if (finetuneActive.value) {
+    finetuneActive.value = false
+    ElMessage.info('微调已关闭')
+    return
+  }
+  finetuneActive.value = true
+  ElMessage.success('微调已开启')
   try {
-    const r = await mlpFinetune({ model_type: form.model_name })
-    ElMessage.success(r.message)
+    await mlpFinetune({ model_type: form.model_name })
   } catch {
-    // 错误已由请求拦截器提示
+    finetuneActive.value = false  // 失败时恢复
   }
 }
 
 async function evaluateMLP() {
+  evaluateLoading.value = true
   try {
     const r = await mlpEvaluate({ model_type: form.model_name })
     const oldMae = r.old_mae != null ? r.old_mae.toFixed(4) : 'N/A'
@@ -282,6 +316,8 @@ async function evaluateMLP() {
     )
   } catch {
     // 错误已由请求拦截器提示
+  } finally {
+    evaluateLoading.value = false
   }
 }
 
@@ -303,7 +339,7 @@ onMounted(async () => {
         </div>
         <span class="panel-sub muted">基于机器学习的时间序列趋势预测</span>
       </div>
-      <div class="panel-form" :class="{ 'panel-form-mlp': isMLP }">
+      <div class="panel-form">
         <div class="f-item">
           <label class="label-eyebrow">设备</label>
           <el-select v-model="form.device_id" placeholder="选择设备" filterable>
@@ -315,7 +351,7 @@ onMounted(async () => {
             />
           </el-select>
         </div>
-        <div class="f-item" v-if="!isMLP">
+        <div class="f-item">
           <label class="label-eyebrow">指标</label>
           <el-select v-model="form.metric">
             <el-option v-for="m in availableMetrics" :key="m.value" :label="m.label + ' (' + m.unit + ')'" :value="m.value" />
@@ -324,7 +360,7 @@ onMounted(async () => {
         <div class="f-item">
           <label class="label-eyebrow">模型</label>
           <el-select v-model="form.model_name">
-            <el-option v-for="m in MODELS" :key="m.value" :label="m.label + ' · ' + m.desc" :value="m.value" />
+            <el-option v-for="m in availableModels" :key="m.value" :label="m.label + ' · ' + m.desc" :value="m.value" />
           </el-select>
         </div>
         <div class="f-item">
@@ -349,41 +385,43 @@ onMounted(async () => {
 
     <!-- MLP 模型管理面板(仅 MLP 模式显示) -->
     <section v-if="isMLP" class="panel rise rise-1b">
-      <div class="panel-head">
+      <div class="panel-head mlp-head">
         <div>
           <div class="label-eyebrow">MLP Manager</div>
           <h2 class="panel-title display">MLP 模型管理</h2>
         </div>
-        <span class="panel-sub muted">{{ form.model_name }}</span>
-      </div>
-      <div class="mlp-actions">
-        <el-button type="primary" @click="trainMLP" :loading="trainLoading">预训练</el-button>
-        <el-button @click="finetuneMLP">微调</el-button>
-        <el-button @click="evaluateMLP">评估</el-button>
-      </div>
-      <div v-if="mlpStatusData" class="mlp-status">
-        <div class="ms-item">
-          <span class="label-eyebrow">样本数</span>
-          <span class="mono">{{ mlpStatusData.num_samples_trained }}</span>
-        </div>
-        <div class="ms-item">
-          <span class="label-eyebrow">train_loss</span>
-          <span class="mono">{{ mlpStatusData.train_loss?.toFixed(4) }}</span>
-        </div>
-        <div class="ms-item">
-          <span class="label-eyebrow">val_loss</span>
-          <span class="mono">{{ mlpStatusData.val_loss?.toFixed(4) }}</span>
-        </div>
-        <div class="ms-item">
-          <span class="label-eyebrow">最后训练</span>
-          <span class="mono sm">{{ mlpStatusData.last_train_time || '—' }}</span>
-        </div>
-        <div class="ms-item" v-if="mlpStatusData.last_finetune_time">
-          <span class="label-eyebrow">最后微调</span>
-          <span class="mono sm">{{ mlpStatusData.last_finetune_time }}</span>
+        <div class="mlp-head-right">
+          <span class="mlp-model-name">{{ modelMeta?.label }}</span>
+          <div class="mlp-actions">
+            <el-button type="primary" @click="trainMLP" :loading="trainLoading">预训练</el-button>
+            <el-button :type="finetuneActive ? 'primary' : 'default'" @click="finetuneMLP">微调</el-button>
+            <el-button @click="evaluateMLP" :loading="evaluateLoading">评估</el-button>
+          </div>
         </div>
       </div>
-      <div v-else class="mlp-status muted empty">
+      <div v-if="mlpStatusData" class="mlp-status-grid">
+        <div class="ms-card">
+          <div class="label-eyebrow">样本数</div>
+          <div class="mono">{{ mlpStatusData.num_samples_trained }}</div>
+        </div>
+        <div class="ms-card">
+          <div class="label-eyebrow">训练损失</div>
+          <div class="mono">{{ mlpStatusData.train_loss?.toFixed(4) }}</div>
+        </div>
+        <div class="ms-card">
+          <div class="label-eyebrow">验证损失</div>
+          <div class="mono">{{ mlpStatusData.val_loss?.toFixed(4) }}</div>
+        </div>
+        <div class="ms-card">
+          <div class="label-eyebrow">最后训练</div>
+          <div class="mono">{{ mlpStatusData.last_train_time || '—' }}</div>
+        </div>
+        <div class="ms-card" v-if="mlpStatusData.last_finetune_time">
+          <div class="label-eyebrow">最后微调</div>
+          <div class="mono">{{ mlpStatusData.last_finetune_time }}</div>
+        </div>
+      </div>
+      <div v-else class="mlp-status-empty">
         <span>模型未训练,点击「预训练」开始</span>
       </div>
     </section>
@@ -411,7 +449,7 @@ onMounted(async () => {
       </div>
       <div class="sb-card">
         <div class="label-eyebrow">预测时间</div>
-        <div class="sb-val mono sm">{{ currentPrediction.predicted_at }}</div>
+        <div class="sb-val mono">{{ currentPrediction.predicted_at }}</div>
       </div>
     </section>
 
@@ -445,18 +483,20 @@ onMounted(async () => {
             <h3 class="chart-title display">预测数据点</h3>
           </div>
         </div>
-        <table>
-          <thead>
-            <tr><th>时间步</th><th>预测值</th><th>单位</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in forecastTable" :key="i">
-              <td class="mono">{{ row.step }}</td>
-              <td class="mono num">{{ row.value }}</td>
-              <td class="muted">{{ row.unit }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>时间步</th><th>预测值</th><th>单位</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in forecastTable" :key="i">
+                <td class="mono">{{ row.step }}</td>
+                <td class="mono num">{{ row.value }}</td>
+                <td class="muted">{{ row.unit }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section v-if="history.length" class="history-card rise rise-4">
@@ -546,6 +586,9 @@ onMounted(async () => {
   font-weight: 500;
   margin-top: 8px;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sb-val span {
   font-size: 11px;
@@ -554,7 +597,6 @@ onMounted(async () => {
   font-weight: 400;
 }
 .sb-val.score { font-size: 13px; color: var(--sage-deep); }
-.sb-val.sm { font-size: 13px; }
 .muted { color: var(--ink-4); }
 
 /* 图表卡 */
@@ -614,6 +656,17 @@ onMounted(async () => {
   padding: 22px 24px;
 }
 .card-head { margin-bottom: 14px; }
+
+/* 表格滚动容器(数据多时避免页面过长) */
+.table-wrap {
+  max-height: 280px;
+  overflow-y: auto;
+}
+.table-wrap thead {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
 
 table {
   width: 100%;
@@ -682,41 +735,66 @@ table tr:last-child td { border-bottom: none; }
   margin-bottom: 24px;
   animation-delay: 0.08s;  /* 介于 .rise-1(0.05s) 与 .rise-2(0.12s) 之间 */
 }
-.panel-form-mlp {
-  grid-template-columns: repeat(4, 1fr) auto;
+/* 标题栏:左右水平居中对齐(覆盖 panel-head 的 flex-end)
+   - flex-end 适合表单(底对齐),但 MLP 卡片左侧是 eyebrow+title 两行、
+     右侧是单行按钮,底对齐时视觉不协调,改为 center 让左右中心线对齐 */
+.mlp-head {
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+.mlp-head-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.mlp-model-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
 }
 .mlp-actions {
   display: flex;
   gap: 10px;
-  margin-bottom: 16px;
-}
-.mlp-status {
-  display: flex;
   flex-wrap: wrap;
-  gap: 18px;
-  padding: 14px 16px;
-  background: var(--sage-tint);
+}
+/* 4 参数卡片填满内容区宽度(4 列 → 缩小时 2 列) */
+.mlp-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.ms-card {
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  padding: 16px 18px;
 }
-.mlp-status.empty {
-  background: transparent;
-  border-style: dashed;
+.ms-card .mono {
+  font-size: 18px;
+  font-weight: 500;
+  margin-top: 8px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mlp-status-empty {
   padding: 12px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
   font-size: 12px;
+  color: var(--ink-4);
 }
-.ms-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.ms-item .mono { font-size: 14px; color: var(--ink); }
-.ms-item .mono.sm { font-size: 12px; }
 
 @media (max-width: 1100px) {
-  .panel-form,
-  .panel-form-mlp { grid-template-columns: repeat(2, 1fr); }
+  .panel-form { grid-template-columns: repeat(2, 1fr); }
   .stat-band { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
+  .mlp-status-grid { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

@@ -53,6 +53,53 @@ def _fetch_history(device_id, limit=_DEFAULT_LOOKBACK):
     ]
 
 
+def _purge_expired_predictions(device_id):
+    """删除该设备已完全过期的预测记录(惰性清理)。
+
+    过期判定:predicted_at + horizon_minutes < 该设备最新传感器数据时间。
+    即预测窗口已完全落后于实际数据,不再有参考价值。
+
+    本函数会执行 db.session.commit(),调用时 session 中不应有未提交的 add。
+    清理失败时仅 rollback 并静默返回(惰性清理不应阻断业务读取)。
+
+    数据库压力分析:
+    - predictions 表有 idx_dev_metric_time 复合索引,按设备过滤走索引
+    - 候选集很小(每设备每次预测生成 1-2 条,课程项目场景下 < 1000 条/设备)
+    - DELETE 操作 < 50ms,仅在 /run, /latest, /history 调用,非高频
+    """
+    try:
+        latest_data = (
+            SensorData.query
+            .filter_by(device_id=device_id)
+            .order_by(SensorData.recorded_at.desc())
+            .first()
+        )
+        if not latest_data:
+            return 0  # 无传感器数据,无法判定过期
+        threshold = latest_data.recorded_at
+
+        # 候选集:预测时间早于最新数据时间(预测窗口可能与实际数据重叠的不算过期)
+        candidates = (
+            Prediction.query
+            .filter_by(device_id=device_id)
+            .filter(Prediction.predicted_at < threshold)
+            .all()
+        )
+        # 精筛:整个预测窗口都在最新数据之前
+        expired_ids = [
+            p.id for p in candidates
+            if p.predicted_at + timedelta(minutes=p.horizon_minutes) < threshold
+        ]
+        if not expired_ids:
+            return 0
+        Prediction.query.filter(Prediction.id.in_(expired_ids)).delete(synchronize_session=False)
+        db.session.commit()
+        return len(expired_ids)
+    except Exception:
+        db.session.rollback()
+        return 0  # 清理失败不影响主流程
+
+
 @bp.post("/predictions/run")
 @jwt_required
 def run_prediction():
@@ -84,6 +131,9 @@ def run_prediction():
     if err:
         return err
 
+    # 清理该设备已过期的预测记录(惰性清理,在生成新预测前先回收旧记录)
+    _purge_expired_predictions(dev.id)
+
     # ===== MLP 分流(mlp_temp_hum / mlp_light)=====
     if model_name in _MLP_MODELS:
         import extensions as ext_mod
@@ -109,7 +159,7 @@ def run_prediction():
         if not row_dicts:
             return jsonify({"error": "无历史数据"}), 400
         try:
-            result = trainer.predict(model_name, row_dicts)
+            result = trainer.predict(model_name, row_dicts, horizon_minutes=int(horizon))
         except Exception as e:
             return jsonify({"error": f"MLP 推理失败: {str(e)}"}), 500
         if "error" in result:
@@ -120,7 +170,7 @@ def run_prediction():
             preds.append(Prediction(
                 device_id=dev.id,
                 metric=metric_name,
-                horizon_minutes=Config.MLP_DEFAULT_HORIZON,
+                horizon_minutes=int(horizon),
                 predicted_values=pred_data["predicted_values"],
                 history_snapshot=pred_data["history_snapshot"],
                 model_name=model_name,
@@ -194,6 +244,9 @@ def latest_prediction():
     if err:
         return err
 
+    # 惰性清理过期预测,确保返回的最新记录是仍有效的
+    _purge_expired_predictions(dev.id)
+
     q = Prediction.query.filter_by(device_id=dev.id, metric=metric)
     if model_name:
         q = q.filter_by(model_name=model_name)
@@ -227,6 +280,9 @@ def prediction_history():
     dev, err = _device_or_404(device_id)
     if err:
         return err
+
+    # 惰性清理过期预测,确保历史列表中不含已失效记录
+    _purge_expired_predictions(dev.id)
 
     q = Prediction.query.filter_by(device_id=dev.id)
     if metric:

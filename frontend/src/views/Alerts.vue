@@ -1028,65 +1028,9 @@ onBeforeUnmount(() => {
 }
 .bind-tree-wrap::-webkit-scrollbar-track { background: transparent; }
 
-/* el-tree 内部默认带白色背景,需覆盖为透明以继承 wrap */
-.bind-tree :deep(.el-tree) {
-  background: transparent;
-  --el-tree-node-hover-bg-color: var(--sage-tint);
-  --el-tree-text-color: var(--ink-2);
-  --el-tree-expand-icon-color: var(--ink-3);
-}
-.bind-tree :deep(.el-tree-node__content) {
-  height: 34px;
-  border-radius: var(--radius);
-  transition: background 0.15s;
-}
-.bind-tree :deep(.el-tree-node__content:hover) {
-  background: var(--sage-tint);
-}
-.bind-tree :deep(.el-tree-node__content) > .el-tree-node__expand-icon {
-  color: var(--ink-3);
-}
-.bind-tree :deep(.el-tree-node__content) > .el-tree-node__expand-icon:hover {
-  color: var(--sage);
-}
-.bind-tree :deep(.el-tree-node__label) {
-  font-size: 13px;
-  color: var(--ink-2);
-  letter-spacing: 0.01em;
-}
-.bind-tree :deep(.el-tree__empty-text) {
-  color: var(--ink-4);
-  font-size: 12px;
-}
+/* el-tree 主题覆写已移至全局 style.css
+   (el-dialog 默认 teleported 到 body,scoped :deep 在 teleport 场景下作用链不稳定) */
 
-/* checkbox:未选中态在深色背景下需提亮边框 */
-.bind-tree :deep(.el-checkbox__inner) {
-  background-color: var(--surface);
-  border-color: var(--line-strong);
-  border-radius: 3px;
-}
-.bind-tree :deep(.el-checkbox__inner:hover) {
-  border-color: var(--sage);
-}
-.bind-tree :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
-  background-color: var(--sage);
-  border-color: var(--sage);
-}
-.bind-tree :deep(.el-checkbox__input.is-checked .el-checkbox__inner::after) {
-  border-color: var(--paper-deep);
-}
-/* indeterminate 态(网关半选) */
-.bind-tree :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
-  background-color: var(--sage);
-  border-color: var(--sage);
-}
-.bind-tree :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner::before) {
-  background-color: var(--paper-deep);
-}
-/* checkbox label/文字继承主题色 */
-.bind-tree :deep(.el-checkbox__label) {
-  color: var(--ink-2);
-}
 .cond-row {
   display: flex;
   align-items: center;

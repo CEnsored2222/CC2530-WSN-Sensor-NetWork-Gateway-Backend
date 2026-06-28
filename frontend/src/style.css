@@ -324,3 +324,70 @@ a:hover { color: var(--sage-deep); }
   background: var(--sage) !important;
   color: #06141a !important;
 }
+
+/* ============================================================
+   el-tree 主题覆写(全局,适用于 teleported dialog 内的树)
+   ============================================================ */
+.el-tree {
+  background: transparent !important;
+  --el-tree-node-hover-bg-color: var(--sage-tint);
+  --el-tree-text-color: var(--ink-2);
+  --el-tree-expand-icon-color: var(--ink-3);
+}
+.el-tree-node__content {
+  height: 34px;
+  border-radius: var(--radius);
+  transition: background 0.15s;
+  background: transparent;
+}
+.el-tree-node__content:hover {
+  background: var(--sage-tint);
+}
+.el-tree-node__content > .el-tree-node__expand-icon {
+  color: var(--ink-3);
+}
+.el-tree-node__content > .el-tree-node__expand-icon:hover {
+  color: var(--sage);
+}
+.el-tree-node__label {
+  font-size: 13px;
+  color: var(--ink-2);
+  letter-spacing: 0.01em;
+}
+.el-tree__empty-text {
+  color: var(--ink-4);
+  font-size: 12px;
+}
+/* checkbox:未选中态在深色背景下需提亮边框 */
+.el-tree .el-checkbox__inner {
+  background-color: var(--surface);
+  border-color: var(--line-strong);
+  border-radius: 3px;
+}
+.el-tree .el-checkbox__inner:hover {
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-checked .el-checkbox__inner {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-checked .el-checkbox__inner::after {
+  border-color: var(--paper-deep);
+}
+/* indeterminate 态(网关半选) */
+.el-tree .el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-indeterminate .el-checkbox__inner::before {
+  background-color: var(--paper-deep);
+}
+.el-tree .el-checkbox__label {
+  color: var(--ink-2);
+}
+
+/* el-dialog body 背景继承(避免某些 EP 版本默认白底) */
+.el-dialog__body,
+.el-dialog__header {
+  background: transparent;
+}

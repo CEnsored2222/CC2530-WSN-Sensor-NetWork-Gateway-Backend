@@ -587,12 +587,13 @@ class ONNXTrainer:
         }
 
     # ---------- 推理 ----------
-    def predict(self, model_type, rows):
-        """ONNX 推理: 递归多步预测(6 步)。
+    def predict(self, model_type, rows, horizon_minutes=None):
+        """ONNX 推理: 递归多步预测(按 horizon 动态生成步数)。
 
         Args:
             model_type: 模型类型
             rows: sensor_data 行(最近 MLP_LOOKBACK_HOURS 小时,单设备)
+            horizon_minutes: 预测时长(分钟),None 时用默认值 60
         Returns:
             {metric: {"predicted_values": {"t+10": v, ...}, "history_snapshot": {...}}}
         """
@@ -615,12 +616,17 @@ class ONNXTrainer:
         else:
             base = [t_sec_last, float(last_row.get("light") or 0)]
 
-        # 递归多步预测(6 步, t_sec 按 86400 回绕)
+        # 递归多步预测(t_sec 按 86400 回绕),步数按 horizon 动态生成
         cur = list(base)
         predictions = {col: [] for col in out_cols}
-        # 步进 = 相邻预测点间隔(10min = 600s),与 MLP_FORECAST_STEPS 间隔一致
-        step_seconds = (Config.MLP_FORECAST_STEPS[1] - Config.MLP_FORECAST_STEPS[0]) * 60
-        for step in Config.MLP_FORECAST_STEPS:
+        # 步进 = 相邻预测点间隔(10min = 600s)
+        step_min = Config.MLP_FORECAST_STEPS[0]
+        step_seconds = step_min * 60
+        if horizon_minutes is None:
+            horizon_minutes = Config.MLP_DEFAULT_HORIZON
+        num_steps = max(1, horizon_minutes // step_min)
+        steps = [step_min * i for i in range(1, num_steps + 1)]
+        for step in steps:
             t_sec_next = (cur[0] + step_seconds) % 86400
             feat = input_scaler.transform(np.array([cur], dtype=float))
             out_norm = session.run(None, {input_name: feat.astype(np.float32)})[0]
@@ -636,7 +642,7 @@ class ONNXTrainer:
         for i, col in enumerate(out_cols):
             pred_vals = predictions[col]
             predicted_values = {}
-            for j, step in enumerate(Config.MLP_FORECAST_STEPS):
+            for j, step in enumerate(steps):
                 predicted_values[f"t+{step}"] = pred_vals[j]
 
             # history_snapshot(与现有 predictor 结构一致)
@@ -648,7 +654,7 @@ class ONNXTrainer:
                     times.append(dt.strftime("%Y-%m-%d %H:%M:%S")
                                  if isinstance(dt, datetime) else str(dt))
                     values.append(float(r[col]))
-            for j, step in enumerate(Config.MLP_FORECAST_STEPS):
+            for j, step in enumerate(steps):
                 future_dt = last_dt + timedelta(minutes=step)
                 times.append(future_dt.strftime("%Y-%m-%d %H:%M:%S") + " *")
                 values.append(pred_vals[j])

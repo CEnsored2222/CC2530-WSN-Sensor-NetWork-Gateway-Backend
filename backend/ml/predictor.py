@@ -150,10 +150,9 @@ def predict(rows: List[Dict[str, Any]], metric: str, model_name: str = "linear",
     last_hum = float(rows[-1].get("humidity") or 0) if rows else 0
     last_light = float(rows[-1].get("light") or 0) if rows else 0
 
-    # 生成预测时间点(分钟 → 秒):每步 = 一个采样间隔,过滤超出 horizon 的步
-    steps = [m for m in FORECAST_STEPS if m <= horizon_minutes]
-    if not steps:
-        steps = [horizon_minutes]
+    # 生成预测时间点:每步 = 一个采样间隔(10min),根据 horizon 动态生成
+    num_steps = max(1, horizon_minutes // SAMPLE_INTERVAL_MIN)
+    steps = [SAMPLE_INTERVAL_MIN * i for i in range(1, num_steps + 1)]
 
     predicted_values = {}
     history_snapshot = {
