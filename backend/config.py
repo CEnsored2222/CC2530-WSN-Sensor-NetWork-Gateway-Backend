@@ -5,7 +5,7 @@ import os
 
 class Config:
     # ============ 版本 ============
-    VERSION = "2.2"
+    VERSION = "2.4"
 
     # ============ Flask ============
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")

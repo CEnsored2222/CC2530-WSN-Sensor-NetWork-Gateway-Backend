@@ -55,7 +55,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: sh-backend:v2.2
+    image: sh-backend:v2.4
     container_name: sh-backend
     restart: unless-stopped
     depends_on:
