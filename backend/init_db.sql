@@ -176,3 +176,39 @@ CREATE TABLE IF NOT EXISTS alert_rule_targets (
     CONSTRAINT fk_art_gateway FOREIGN KEY (gateway_id) REFERENCES gateways(id)    ON DELETE CASCADE,
     CONSTRAINT fk_art_device  FOREIGN KEY (device_id)  REFERENCES devices(id)     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 10. ml_models  MLP 模型状态表(固定2行,UPSERT,主键 model_type)
+-- ============================================
+CREATE TABLE IF NOT EXISTS ml_models (
+    model_type         ENUM('mlp_temp_hum','mlp_light') NOT NULL,
+    last_train_time    DATETIME NULL COMMENT '数据分界线:此时间之前=已训练,之后=未训练',
+    last_finetune_time DATETIME NULL COMMENT '上次微调成功时间(仅微调成功时更新,用于重启恢复)',
+    num_samples_trained INT DEFAULT 0 COMMENT '预训练聚合总样本数(训练集+验证集),微调不更新',
+    train_loss         FLOAT NULL COMMENT '预训练最终epoch训练集平均loss,微调不更新',
+    val_loss           FLOAT NULL COMMENT '预训练最终epoch验证集平均loss(早停依据),微调不更新',
+    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (model_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 11. ml_evaluations  MLP 评估事件表(追加INSERT)
+-- ============================================
+CREATE TABLE IF NOT EXISTS ml_evaluations (
+    id            BIGINT NOT NULL AUTO_INCREMENT,
+    model_type    ENUM('mlp_temp_hum','mlp_light') NOT NULL,
+    eval_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    new_mae       FLOAT NULL,
+    new_r2        FLOAT NULL,
+    new_rmse      FLOAT NULL,
+    old_mae       FLOAT NULL,
+    old_r2        FLOAT NULL,
+    old_rmse      FLOAT NULL,
+    winner        ENUM('new','old','tie') NOT NULL,
+    data_start    DATETIME NULL,
+    data_end      DATETIME NULL,
+    num_samples   INT NULL,
+    PRIMARY KEY (id),
+    INDEX idx_model_time (model_type, eval_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

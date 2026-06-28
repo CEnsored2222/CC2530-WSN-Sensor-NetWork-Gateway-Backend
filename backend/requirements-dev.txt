@@ -1,0 +1,6 @@
+# 开发环境依赖(包含生产依赖 + 测试工具)
+# 用法: pip install -r requirements-dev.txt
+-r requirements.txt
+
+# ============ 测试工具 ============
+pytest>=8.0

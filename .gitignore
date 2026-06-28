@@ -7,6 +7,7 @@ dist/
 build/
 *.egg
 .eggs/
+.pytest_cache/
 
 # Virtual environments
 venv/
@@ -26,6 +27,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.npm-cache/
 
 # Build outputs
 frontend/dist/
@@ -54,6 +56,19 @@ desktop.ini
 
 # Trae
 .trae/
+
+# CodeBuddy
+.codebuddy/
+
+# 实施计划文档(审查过程记录,不入库)
+MLP_ONNX_Implementation_Plan.md
+MLP_前端适配指南.md
+
+# MLP 模型运行时产物(.onnx/.pt/scaler.json/.prev,代码自动创建目录)
+backend/ml/models/
+
+# 测试文件夹(本地保留用于开发,不入库)
+backend/tests/
 
 # Temporary files
 *.tmp

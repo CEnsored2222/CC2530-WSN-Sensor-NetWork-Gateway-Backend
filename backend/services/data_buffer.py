@@ -31,6 +31,21 @@ class DataBuffer:
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
+        # MLP 环形缓冲区(torch 未装时为 None,延迟初始化)
+        self._ring_buffer = None
+
+    @property
+    def ring_buffer(self):
+        """延迟初始化环形缓冲区(torch 未装时返回 None)。"""
+        if self._ring_buffer is None:
+            try:
+                from config import Config
+                from services.sensor_ring_buffer import SensorRingBuffer
+                self._ring_buffer = SensorRingBuffer(
+                    capacity=Config.MLP_RING_BUFFER_CAPACITY)
+            except ImportError:
+                pass  # torch/onnxruntime 未装,环形缓冲区不可用
+        return self._ring_buffer
 
     def update(self, device_id, **fields):
         """更新设备最新值,返回该设备当前全部最新字段(副本)。"""
@@ -40,6 +55,11 @@ class DataBuffer:
             # 仅当更新的是采集字段时才标记 dirty(led/status 不入库)
             if any(f in _DATA_FIELDS for f in fields):
                 self._dirty.add(device_id)
+                # 推送完整快照到环形缓冲区(供 MLP 微调/评估用)
+                rb = self.ring_buffer
+                if rb is not None:
+                    import time as _time
+                    rb.push(device_id, dict(rec), rec.get("_ts") or _time.time())
             return dict(rec)
 
     def get_latest(self, device_id):
