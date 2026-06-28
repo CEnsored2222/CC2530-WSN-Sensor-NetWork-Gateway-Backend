@@ -18,13 +18,20 @@ const deleting = ref(false)
 
 // action 中文标签与归类色映射
 const ACTION_META = {
-  login:             { label: '登录',     tint: 'sage',  icon: '⌁' },
-  approve_gateway:   { label: '审批网关',  tint: 'sage',  icon: '✓' },
-  reject_gateway:    { label: '拒绝网关',  tint: 'terra', icon: '×' },
-  unbind_gateway:    { label: '解绑网关',  tint: 'terra', icon: '⌫' },
-  bind_device:        { label: '绑定设备',  tint: 'sage',  icon: '⊙' },
-  device_cmd:         { label: '设备控制',  tint: 'amber', icon: '⌖' },
-  toggle_subscription:{ label: '订阅变更',  tint: 'amber', icon: '◐' }
+  login:               { label: '登录',     tint: 'sage',  icon: '⌁' },
+  register:            { label: '注册',     tint: 'sage',  icon: '✦' },
+  send_code:           { label: '发送验证码', tint: 'sage',  icon: '✉' },
+  approve_gateway:     { label: '审批网关',  tint: 'sage',  icon: '✓' },
+  reject_gateway:      { label: '拒绝网关',  tint: 'terra', icon: '×' },
+  unbind_gateway:      { label: '解绑网关',  tint: 'terra', icon: '⌫' },
+  bind_device:         { label: '绑定设备',  tint: 'sage',  icon: '⊙' },
+  device_cmd:          { label: '设备控制',  tint: 'amber', icon: '⌖' },
+  toggle_subscription: { label: '订阅变更',  tint: 'amber', icon: '◐' },
+  create_alert_rule:   { label: '创建规则',  tint: 'sage',  icon: '＋' },
+  update_alert_rule:   { label: '修改规则',  tint: 'amber', icon: '✎' },
+  delete_alert_rule:   { label: '删除规则',  tint: 'terra', icon: '✕' },
+  toggle_alert_rule:   { label: '启停规则',  tint: 'amber', icon: '◐' },
+  alert:               { label: '告警触发',  tint: 'terra', icon: '⚠' },
 }
 
 function metaOf(action) {

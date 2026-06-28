@@ -16,6 +16,8 @@ from utils.auth import jwt_required
 
 bp = Blueprint("device", __name__)
 
+_IP = lambda: request.remote_addr or ""
+
 
 def _device_owned(dev):
     return dev is not None and dev.gateway is not None and dev.gateway.user_id == g.current_user.id
@@ -57,6 +59,7 @@ def bind_device(did):
         user_id=g.current_user.id, action="bind_device",
         target_type="device", target_id=dev.id,
         detail=json.dumps({"name": dev.name}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(dev.to_dict())
@@ -102,6 +105,7 @@ def cmd(did):
         user_id=g.current_user.id, action="device_cmd",
         target_type="device", target_id=dev.id,
         detail=json.dumps({"cmd": cmd_name, "value": value}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify({"ok": True, "cmd": cmd_name, "value": value})

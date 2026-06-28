@@ -22,6 +22,9 @@ from utils.auth import jwt_required
 bp = Blueprint("alert", __name__)
 
 
+_IP = lambda: request.remote_addr or ""
+
+
 _ALLOWED_METRICS = set(METRICS)
 _ALLOWED_OPS = set(OPERATORS)
 _ALLOWED_LOGICS = set(LOGICS)
@@ -212,6 +215,7 @@ def create_rule():
         user_id=g.current_user.id, action="create_alert_rule",
         target_type="alert_rule", target_id=rule.id,
         detail=json.dumps({"name": rule.name, "metric": rule.metric}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(rule.to_dict()), 201
@@ -249,6 +253,7 @@ def update_rule(rid):
         user_id=g.current_user.id, action="update_alert_rule",
         target_type="alert_rule", target_id=rule.id,
         detail=json.dumps({"name": rule.name}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(rule.to_dict())
@@ -272,6 +277,7 @@ def delete_rule(rid):
         user_id=g.current_user.id, action="delete_alert_rule",
         target_type="alert_rule", target_id=rid,
         detail=json.dumps({"name": name}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify({"ok": True})
@@ -298,6 +304,7 @@ def toggle_rule(rid):
         user_id=g.current_user.id, action="toggle_alert_rule",
         target_type="alert_rule", target_id=rule.id,
         detail=json.dumps({"enabled": rule.enabled}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(rule.to_dict())

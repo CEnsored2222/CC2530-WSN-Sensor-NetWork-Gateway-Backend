@@ -34,6 +34,18 @@ _DEVICE_RE = re.compile(rf"^{topics.TOPIC_PREFIX}/([^/]+)/device/([^/]+)/([^/]+)
 class MqttHandler:
     def __init__(self, app):
         self.app = app
+        self._enabled_metrics = None  # 缓存已启用指标集合,None 表示未加载
+
+    def refresh_enabled_metrics(self):
+        """刷新已启用指标缓存(订阅切换后调用)。"""
+        with self.app.app_context():
+            self._enabled_metrics = {s.metric for s in Subscription.query.filter_by(subscribed=True).all()}
+
+    def _get_enabled_metrics(self):
+        """获取已启用指标集合(惰性加载 + 缓存)。"""
+        if self._enabled_metrics is None:
+            self.refresh_enabled_metrics()
+        return self._enabled_metrics
 
     def on_message(self, client, userdata, msg):
         with self.app.app_context():
@@ -185,8 +197,8 @@ class MqttHandler:
         # 缓冲并取该设备最新全部字段
         rec = extensions.data_buffer.update(dev.id, **{field: value, "_ts": ts})
 
-        # 实时推送(不入库):按订阅表过滤已关闭的指标
-        enabled = {s.metric for s in Subscription.query.filter_by(subscribed=True).all()}
+        # 实时推送(不入库):按订阅表过滤已关闭的指标(使用缓存)
+        enabled = self._get_enabled_metrics()
         _FIELD_TO_METRIC = {
             "temperature": "temperature", "humidity": "humidity", "light": "light",
             "led_status": "led_status", "device_status": "device_status",

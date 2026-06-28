@@ -9,6 +9,11 @@ import { getSocket } from '@/ws/socket'
 
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.role === 'admin')
+const currentUserId = computed(() => userStore.user?.id)
+// 普通用户可编辑自己创建的规则,管理员可编辑所有规则
+function canEdit(rule) {
+  return isAdmin.value || rule.user_id === currentUserId.value
+}
 
 const tab = ref('records')
 
@@ -437,8 +442,8 @@ onBeforeUnmount(() => {
 
     <!-- ===== 预警规则 ===== -->
     <section v-if="tab === 'rules'" class="panel">
-      <div class="rules-hint muted" v-if="!isAdmin">
-        <span class="label-eyebrow">只读模式</span> · 仅管理员可修改规则
+      <div class="rules-hint muted" v-if="!isAdmin && !rules.length">
+        <span class="label-eyebrow">提示</span> · 点击「新建规则」创建属于你的预警规则
       </div>
 
       <div class="rules-list" v-loading="rulesLoading">
@@ -457,11 +462,11 @@ onBeforeUnmount(() => {
             <div class="rc-actions">
               <el-switch
                 v-model="rule.enabled"
-                :disabled="!isAdmin"
+                :disabled="!canEdit(rule)"
                 @change="onToggle(rule)"
               />
-              <button v-if="isAdmin" class="icon-btn" title="编辑" @click="openEdit(rule)">✎</button>
-              <button v-if="isAdmin" class="icon-btn danger" title="删除" @click="onDelete(rule)">✕</button>
+              <button v-if="canEdit(rule)" class="icon-btn" title="编辑" @click="openEdit(rule)">✎</button>
+              <button v-if="canEdit(rule)" class="icon-btn danger" title="删除" @click="onDelete(rule)">✕</button>
             </div>
           </div>
 

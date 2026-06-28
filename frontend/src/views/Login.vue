@@ -2,7 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { login, register } from '@/api/auth'
+import { login, register, sendCode } from '@/api/auth'
 import { useUserStore } from '@/stores/user'
 import { connectSocket } from '@/ws/socket'
 
@@ -12,7 +12,37 @@ const userStore = useUserStore()
 
 const mode = ref('login') // login | register
 const loading = ref(false)
-const form = reactive({ username: '', password: '', confirm: '' })
+const sending = ref(false)
+const countdown = ref(0)
+const verifyToken = ref('')
+const form = reactive({ username: '', password: '', confirm: '', email: '', code: '' })
+
+let countdownTimer = null
+
+async function sendVerifyCode() {
+  if (!form.email) {
+    ElMessage.warning('请先填写邮箱')
+    return
+  }
+  sending.value = true
+  try {
+    const res = await sendCode(form.email)
+    verifyToken.value = res.token
+    ElMessage.success(res.message || '验证码已发送')
+    countdown.value = 60
+    countdownTimer = setInterval(() => {
+      countdown.value--
+      if (countdown.value <= 0) {
+        clearInterval(countdownTimer)
+        countdownTimer = null
+      }
+    }, 1000)
+  } catch (e) {
+    verifyToken.value = ''
+  } finally {
+    sending.value = false
+  }
+}
 
 async function submit() {
   if (!form.username || !form.password) {
@@ -20,16 +50,30 @@ async function submit() {
     return
   }
   if (mode.value === 'register') {
+    if (!form.email) return ElMessage.warning('请填写邮箱')
+    if (!form.code) return ElMessage.warning('请填写验证码')
     if (form.password.length < 6) return ElMessage.warning('密码至少 6 位')
     if (form.password !== form.confirm) return ElMessage.warning('两次密码不一致')
   }
   loading.value = true
   try {
-    const fn = mode.value === 'login' ? login : register
-    const { token, user } = await fn(form.username, form.password)
-    userStore.setAuth(token, user)
-    connectSocket()
-    ElMessage.success(mode.value === 'login' ? '欢迎回来' : '注册成功')
+    if (mode.value === 'login') {
+      const { token, user } = await login(form.username, form.password)
+      userStore.setAuth(token, user)
+      connectSocket()
+      ElMessage.success('欢迎回来')
+    } else {
+      const { token, user } = await register(
+        form.username,
+        form.password,
+        form.email,
+        form.code,
+        verifyToken.value
+      )
+      userStore.setAuth(token, user)
+      connectSocket()
+      ElMessage.success('注册成功')
+    }
     router.push(route.query.redirect || '/')
   } catch (e) {
     /* 拦截器已提示 */
@@ -103,24 +147,49 @@ async function submit() {
             <label class="label-eyebrow">用户名</label>
             <el-input v-model="form.username" placeholder="输入用户名" size="large" />
           </div>
-          <div class="field rise rise-4">
+          <div v-if="mode === 'register'" class="field rise rise-4">
+            <label class="label-eyebrow">邮箱</label>
+            <el-input v-model="form.email" placeholder="输入邮箱地址" size="large" />
+          </div>
+          <div class="field" :class="mode === 'register' ? 'rise rise-5' : 'rise rise-4'">
             <label class="label-eyebrow">密码</label>
             <el-input v-model="form.password" type="password" show-password placeholder="输入密码" size="large" />
           </div>
-          <div v-if="mode === 'register'" class="field rise rise-5">
+          <div v-if="mode === 'register'" class="field rise rise-6">
             <label class="label-eyebrow">确认密码</label>
             <el-input v-model="form.confirm" type="password" show-password placeholder="再次输入密码" size="large" />
           </div>
+          <div v-if="mode === 'register'" class="field rise rise-7">
+            <label class="label-eyebrow">验证码</label>
+            <div class="code-row">
+              <el-input
+                v-model="form.code"
+                class="code-input"
+                placeholder="6位验证码"
+                maxlength="6"
+                size="large"
+                @input="form.code = form.code.replace(/\D/g, '')"
+              />
+              <el-button
+                class="send-btn"
+                size="large"
+                :disabled="!form.email || sending || countdown > 0"
+                :loading="sending"
+                @click="sendVerifyCode"
+              >{{ countdown > 0 ? `${countdown}s` : '发送验证码' }}</el-button>
+            </div>
+          </div>
 
           <el-button
-            class="submit rise rise-6"
+            class="submit"
+            :class="mode === 'register' ? 'rise rise-8' : 'rise rise-5'"
             type="primary"
             :loading="loading"
             @click="submit"
           >{{ mode === 'login' ? '登 录' : '注 册' }}</el-button>
         </form>
 
-        <div class="demo muted rise rise-6">
+        <div class="demo muted" :class="mode === 'register' ? 'rise rise-8' : 'rise rise-5'">
           <span class="label-eyebrow">演示账号</span>
           <code class="mono">admin / admin123</code>
         </div>
@@ -290,6 +359,17 @@ async function submit() {
   font-size: 15px;
   letter-spacing: 0.15em;
   margin-top: 12px;
+}
+.code-row {
+  display: flex;
+  gap: 10px;
+}
+.code-input {
+  flex: 1;
+}
+.send-btn {
+  flex-shrink: 0;
+  min-width: 120px;
 }
 .demo {
   margin-top: 36px;
