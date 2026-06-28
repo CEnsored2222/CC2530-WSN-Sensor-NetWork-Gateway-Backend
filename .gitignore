@@ -67,6 +67,9 @@ MLP_前端适配指南.md
 # MLP 模型运行时产物(.onnx/.pt/scaler.json/.prev,代码自动创建目录)
 backend/ml/models/
 
+# 测试文件夹(本地保留用于开发,不入库)
+backend/tests/
+
 # Temporary files
 *.tmp
 *.bak

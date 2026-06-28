@@ -270,7 +270,6 @@ End/
 │   ├── services/         # 告警引擎 & 数据入库缓冲 & ring buffer
 │   ├── ws/               # WebSocket 事件推送
 │   ├── utils/            # JWT 鉴权工具
-│   ├── tests/            # pytest 单元测试 (66 用例)
 │   ├── app.py            # 应用工厂入口
 │   ├── config.py         # 配置（环境变量覆盖 + 19 个 MLP_* 参数）
 │   ├── init_db.sql       # 数据库一键初始化脚本 (11 张表)
