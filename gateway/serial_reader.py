@@ -5,6 +5,7 @@
 import threading
 import time
 
+from log_handler import log
 from serial_parser import parse_packet
 from state import gateway_state
 
@@ -24,27 +25,42 @@ class SerialReader:
 
     def start(self):
         if self._serial is None:
-            print("[SerialReader] 串口不可用(serial_port=None),无法启动串口监听")
+            log("[SerialReader] 串口不可用(serial_port=None),无法启动串口监听", "WARN")
             return
         if not gateway_state.approved:
-            print("[SerialReader] 网关未审批通过,暂不启动串口监听")
+            log("[SerialReader] 网关未审批通过,暂不启动串口监听", "INFO")
+            return
+        if self._running:
+            log("[SerialReader] 串口监听已在运行", "INFO")
             return
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="serial-reader")
         self._thread.start()
-        print(f"[SerialReader] 串口监听已启动")
+        log("[SerialReader] 串口监听已启动", "SUCCESS")
 
     def stop(self):
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
 
+    def update_serial(self, new_port):
+        """运行时更新串口引用，用于 GUI 重新打开串口。
+
+        先停止监听（若在运行），替换引用后自动恢复。
+        """
+        was_running = self._running
+        if was_running:
+            self.stop()
+        self._serial = new_port
+        if was_running:
+            self.start()
+
     def _loop(self):
         while self._running:
             try:
                 raw = self._serial.readline()
             except Exception as e:
-                print(f"[SerialReader] 读取异常: {e}")
+                log(f"[SerialReader] 读取异常: {e}", "ERROR")
                 time.sleep(1)
                 continue
 
@@ -57,8 +73,10 @@ class SerialReader:
             if not line:
                 continue
 
+            log(f"[SerialReader] 收到报文: {line}")
             kind, data = parse_packet(line)
             if kind is None:
+                log(f"[SerialReader] 报文解析失败(忽略): {line}", "WARN")
                 continue
 
             # 待审隔离:审批通过前不发布业务数据
@@ -73,7 +91,7 @@ class SerialReader:
                 elif kind == "feedback":
                     self._handle_feedback(data)
             except Exception as e:
-                print(f"[SerialReader] 处理报文异常 kind={kind} err={e}")
+                log(f"[SerialReader] 处理报文异常 kind={kind} err={e}", "ERROR")
 
     def _on_new_mac(self, mac: str):
         """新 MAC 出现时发布设备发现与活跃状态。"""
@@ -84,7 +102,7 @@ class SerialReader:
         mac = data["mac"]
         is_new = self._macs.register(mac)
         if is_new:
-            print(f"[SerialReader] 新设备注册 {mac}")
+            log(f"[SerialReader] 新设备注册 {mac}", "SUCCESS")
             self._on_new_mac(mac)
 
     def _handle_data(self, data):
@@ -92,7 +110,7 @@ class SerialReader:
         is_new = self._macs.register(mac)
         if is_new:
             # 数据报文触发新设备发现(防止设备未先发 REG)
-            print(f"[SerialReader] 数据报文发现新设备 {mac}")
+            log(f"[SerialReader] 数据报文发现新设备 {mac}", "SUCCESS")
             self._on_new_mac(mac)
 
         if "temperature" in data:
@@ -118,7 +136,7 @@ class SerialReader:
         cmd = data.get("cmd", "")
         value = data.get("value")
         result = (data.get("cmd_result", "") or "").upper()
-        print(f"[SerialReader] 控制反馈 dev={mac} cmd={cmd} value={value} result={result}")
+        log(f"[SerialReader] 控制反馈 dev={mac} cmd={cmd} value={value} result={result}")
 
         # 仅当指令成功时才更新状态(失败不反馈,但也防御性处理)
         if result != "SUCCESS":

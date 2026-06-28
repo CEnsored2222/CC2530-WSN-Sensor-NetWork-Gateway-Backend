@@ -7,6 +7,8 @@
 """
 import threading
 
+from log_handler import log
+
 
 class SerialWriter:
     def __init__(self, serial_port=None):
@@ -16,10 +18,14 @@ class SerialWriter:
         self._serial = serial_port
         self._lock = threading.Lock()
 
+    def update_serial(self, new_port):
+        """运行时更新串口引用（GUI 重新打开串口时调用）。"""
+        self._serial = new_port
+
     def _write(self, text: str):
         data = (text + "\n").encode("utf-8")
         if self._serial is None:
-            print(f"[SerialWriter] 串口未就绪,丢弃: {text}")
+            log(f"[SerialWriter] 串口未就绪,丢弃: {text}", "WARN")
             return
         with self._lock:
             self._serial.write(data)
@@ -28,7 +34,7 @@ class SerialWriter:
                     self._serial.flush()
                 except Exception:
                     pass
-        print(f"[SerialWriter] 下发: {text}")
+        log(f"[SerialWriter] 下发: {text}")
 
     def write_led(self, mac: str, value):
         self._write(f"{{LED={int(value)}, MAC={mac}}}")
@@ -43,4 +49,4 @@ class SerialWriter:
         elif cmd == "STATUS":
             self.write_status(dev_mac, value)
         else:
-            print(f"[SerialWriter] 未知指令 cmd={cmd}")
+            log(f"[SerialWriter] 未知指令 cmd={cmd}", "WARN")

@@ -60,6 +60,9 @@ desktop.ini
 # CodeBuddy
 .codebuddy/
 
+# WorkBuddy
+.workbuddy/
+
 # 实施计划文档(审查过程记录,不入库)
 MLP_ONNX_Implementation_Plan.md
 MLP_前端适配指南.md
@@ -69,6 +72,16 @@ backend/ml/models/
 
 # 测试文件夹(本地保留用于开发,不入库)
 backend/tests/
+gateway/tests/
+
+# 网关运行时产物(exe 同目录自动生成)
+gateway/gw_uuid.txt
+gateway/gateway.ini
+
+# PyInstaller 打包产物
+gateway/dist/
+gateway/build/
+gateway/*.spec
 
 # Temporary files
 *.tmp

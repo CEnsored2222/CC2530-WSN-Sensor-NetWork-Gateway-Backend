@@ -45,10 +45,16 @@ def parse_packet(line: str):
         data = {"mac": mac, "cmd_result": fields["CMD"]}
         if "LED" in fields:
             data["cmd"] = "LED"
-            data["value"] = int(fields["LED"])
+            try:
+                data["value"] = int(fields["LED"])
+            except ValueError:
+                pass
         elif "STATUS" in fields:
             data["cmd"] = "STATUS"
-            data["value"] = int(fields["STATUS"])
+            try:
+                data["value"] = int(fields["STATUS"])
+            except ValueError:
+                pass
         return "feedback", data
 
     # 数据报文 {Temp=..,Humidity=..,D=..,MAC=..} 或 {Light=..,D=..,MAC=..}
