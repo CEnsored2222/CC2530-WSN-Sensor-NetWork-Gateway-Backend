@@ -16,11 +16,18 @@ CREATE TABLE IF NOT EXISTS users (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
     username    VARCHAR(64)     NOT NULL,
     password_hash VARCHAR(255)  NOT NULL,
+    email       VARCHAR(128)    NULL,
+    email_verified TINYINT(1)   NOT NULL DEFAULT 0,
     role        ENUM('user','admin') NOT NULL DEFAULT 'user',
     created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_username (username)
+    UNIQUE KEY uk_username (username),
+    UNIQUE KEY uk_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 默认管理员账号 admin / admin123
+INSERT IGNORE INTO users (username, password_hash, email, email_verified, role)
+VALUES ('admin', '$2b$12$G0ZsjR4ZLiYOZSlzB0XRzOFhcQmatDYdsq4GGhNJ3z0i0m9.7Fg/m', 'admin@atmos.local', 1, 'admin');
 
 -- ============================================
 -- 2. gateways  网关表

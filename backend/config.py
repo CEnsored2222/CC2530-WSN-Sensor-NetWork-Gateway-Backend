@@ -30,6 +30,14 @@ class Config:
     TOPIC_PREFIX = "smart_home/gateway"
     DATA_FLUSH_INTERVAL = 600          # 数据入库节流间隔(秒)
 
+    # ============ 邮箱验证码 ============
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.qq.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+    SMTP_USER = os.getenv("SMTP_USER", "2186277326@qq.com")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "wbffjlmiznypecei")
+    CODE_EXPIRE_MINUTES = int(os.getenv("CODE_EXPIRE_MINUTES", "5"))
+    CODE_RATE_LIMIT_SECONDS = int(os.getenv("CODE_RATE_LIMIT_SECONDS", "60"))
+
     # ============ 启动行为 ============
     SEED_ADMIN = os.getenv("SEED_ADMIN", "true").lower() == "true"
     ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")

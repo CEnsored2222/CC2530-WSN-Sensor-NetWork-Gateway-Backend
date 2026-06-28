@@ -18,6 +18,9 @@ from utils.auth import jwt_required
 bp = Blueprint("gateway", __name__)
 
 
+_IP = lambda: request.remote_addr or ""
+
+
 @bp.get("/gateways/pending")
 @jwt_required
 def pending():
@@ -60,6 +63,7 @@ def approve(gw_uuid):
         user_id=g.current_user.id, action="approve_gateway",
         target_type="gateway", target_id=gw.id,
         detail=json.dumps({"name": gw.name}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(gw.to_dict())
@@ -79,6 +83,13 @@ def reject(gw_uuid):
         {"gw_uuid": gw_uuid, "result": "rejected", "ts": int(time.time())},
         qos=1,
     )
+    db.session.add(OperationLog(
+        user_id=g.current_user.id, action="reject_gateway",
+        target_type="gateway", target_id=gw.id,
+        detail=json.dumps({"gw_uuid": gw_uuid}, ensure_ascii=False),
+        ip=_IP(),
+    ))
+    db.session.commit()
     return jsonify({"ok": True})
 
 
@@ -117,6 +128,7 @@ def unbind(gid):
         user_id=g.current_user.id, action="unbind_gateway",
         target_type="gateway", target_id=gw.id,
         detail=json.dumps({"gw_uuid": gw.gw_uuid}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify({"ok": True})

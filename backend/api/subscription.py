@@ -17,6 +17,8 @@ from utils.auth import admin_required, jwt_required
 
 bp = Blueprint("subscription", __name__)
 
+_IP = lambda: request.remote_addr or ""
+
 
 @bp.get("/subscriptions")
 @jwt_required
@@ -49,6 +51,9 @@ def toggle(metric):
     else:
         extensions.mqtt_client.unsubscribe_metric(metric)
 
+    # 刷新 MQTT 处理器中的订阅缓存
+    extensions.mqtt_client._handler.refresh_enabled_metrics()
+
     # 下发订阅配置给所有已绑定网关(可选优化,网关据此停止转发)
     enabled = [s.metric for s in Subscription.query.filter_by(subscribed=True).all()]
     for gw in Gateway.query.filter(Gateway.user_id.isnot(None)).all():
@@ -65,6 +70,7 @@ def toggle(metric):
         user_id=g.current_user.id, action="toggle_subscription",
         target_type="subscription", detail=json.dumps(
             {"metric": metric, "subscribed": sub.subscribed}, ensure_ascii=False),
+        ip=_IP(),
     ))
     db.session.commit()
     return jsonify(sub.to_dict())
