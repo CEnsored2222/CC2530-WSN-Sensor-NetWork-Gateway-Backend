@@ -231,7 +231,7 @@ smart_home/gateway/{gw_uuid}/
 - **评估指标**：MAE（平均绝对误差）+ R²（决定系数）
 - **前端可视化**：历史实线 + 预测橙色虚线 双线对比图
 
-### 引擎二：MLP ONNX 持续学习管线（`/api/mlp`）
+### 引擎二：MLP ONNX 持续学习管线（`/api/predictions/mlp`）
 
 基于 PyTorch 训练 + ONNX 导出 + onnxruntime 推理的三阶段管线，由后台调度器自动维护。
 

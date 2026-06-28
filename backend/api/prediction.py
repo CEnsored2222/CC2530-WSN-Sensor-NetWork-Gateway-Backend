@@ -180,22 +180,24 @@ def latest_prediction():
     入参 query:
       device_id: int (必填)
       metric: str (必填)
+      model_name: str (可选, linear/svr/mlp_temp_hum/mlp_light)
     """
     device_id = request.args.get("device_id", type=int)
     metric = request.args.get("metric")
+    model_name = request.args.get("model_name")
     if not device_id or metric not in _VALID_METRICS:
         return jsonify({"error": "device_id + metric 必填,metric ∈ temperature/humidity/light"}), 400
+    if model_name and model_name not in _VALID_MODELS + _MLP_MODELS:
+        return jsonify({"error": f"model_name 必须为 {_VALID_MODELS + _MLP_MODELS} 之一"}), 400
 
     dev, err = _device_or_404(device_id)
     if err:
         return err
 
-    pred = (
-        Prediction.query
-        .filter_by(device_id=dev.id, metric=metric)
-        .order_by(Prediction.predicted_at.desc())
-        .first()
-    )
+    q = Prediction.query.filter_by(device_id=dev.id, metric=metric)
+    if model_name:
+        q = q.filter_by(model_name=model_name)
+    pred = q.order_by(Prediction.predicted_at.desc()).first()
     if not pred:
         return jsonify(None)
     return jsonify(pred.to_dict())
@@ -209,15 +211,19 @@ def prediction_history():
     入参 query:
       device_id: int (必填)
       metric: str (可选)
+      model_name: str (可选, linear/svr/mlp_temp_hum/mlp_light)
       limit: int (默认 20)
     """
     device_id = request.args.get("device_id", type=int)
     metric = request.args.get("metric")
+    model_name = request.args.get("model_name")
     limit = request.args.get("limit", 20, type=int)
     limit = max(1, min(limit, 100))
 
     if not device_id:
         return jsonify({"error": "device_id 必填"}), 400
+    if model_name and model_name not in _VALID_MODELS + _MLP_MODELS:
+        return jsonify({"error": f"model_name 必须为 {_VALID_MODELS + _MLP_MODELS} 之一"}), 400
     dev, err = _device_or_404(device_id)
     if err:
         return err
@@ -227,5 +233,7 @@ def prediction_history():
         if metric not in _VALID_METRICS:
             return jsonify({"error": "metric 不合法"}), 400
         q = q.filter_by(metric=metric)
+    if model_name:
+        q = q.filter_by(model_name=model_name)
     rows = q.order_by(Prediction.predicted_at.desc()).limit(limit).all()
     return jsonify([p.to_dict() for p in rows])

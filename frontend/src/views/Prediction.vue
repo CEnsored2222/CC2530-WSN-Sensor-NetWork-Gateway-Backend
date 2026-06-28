@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, watch, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listGateways } from '@/api/gateway'
 import { listDevices } from '@/api/device'
-import { runPrediction, latestPrediction, predictionHistory } from '@/api/prediction'
+import { runPrediction, latestPrediction, predictionHistory, mlpTrain, mlpFinetune, mlpEvaluate, mlpStatus } from '@/api/prediction'
 import LineChart from '@/components/charts/LineChart.vue'
 
 const loading = ref(false)
@@ -19,6 +19,7 @@ const form = reactive({
 })
 
 const currentPrediction = ref(null)
+const mlpPredictions = ref(null)  // MLP 数组响应缓存(供切换 metric 查看)
 const history = ref([])
 const error = ref('')
 
@@ -30,11 +31,26 @@ const METRICS = [
 const MODELS = [
   { value: 'linear', label: 'LinearRegression', desc: '线性回归(基线)' },
   { value: 'svr', label: 'SVR', desc: '支持向量回归 · RBF' },
+  { value: 'mlp_temp_hum', label: 'MLP 温湿度', desc: 'ONNX · 多输出(温度+湿度)' },
+  { value: 'mlp_light', label: 'MLP 光照', desc: 'ONNX · 单输出(光照)' },
 ]
 const HORIZONS = [30, 60, 120, 180, 240]  // 0.5h / 1h / 2h / 3h / 4h
 const LOOKBACKS = [72, 144, 288, 432]     // 12h / 24h / 48h / 72h (按 10min/条)
 
-const metricMeta = computed(() => METRICS.find((m) => m.value === form.metric))
+// MLP 模式标记
+const isMLP = computed(() => form.model_name.startsWith('mlp_'))
+
+// MLP 模型管理状态
+const trainLoading = ref(false)
+const mlpStatusData = ref(null)
+
+// MLP 模式下用 currentPrediction.metric(后端返回),传统模式用 form.metric
+const metricMeta = computed(() => {
+  const metric = isMLP.value && currentPrediction.value?.metric
+    ? currentPrediction.value.metric
+    : form.metric
+  return METRICS.find((m) => m.value === metric) || METRICS[0]
+})
 const modelMeta = computed(() => MODELS.find((m) => m.value === form.model_name))
 
 // 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
@@ -59,12 +75,14 @@ function buildSeries(pred) {
   const snap = pred.history_snapshot
   const times = snap.times || []
   const values = snap.values || []
+  // 从 pred.metric 推断元数据(MLP 模式下 pred.metric 来自后端)
+  const meta = METRICS.find((m) => m.value === pred.metric) || METRICS[0]
   // 分割点:第一个带 ' *' 的预测点
   const splitIdx = times.findIndex((t) => typeof t === 'string' && t.endsWith(' *'))
   if (splitIdx < 0) {
     return [{
-      name: `${metricMeta.value.label} (${metricMeta.value.unit})`,
-      color: metricMeta.value.color,
+      name: `${meta.label} (${meta.unit})`,
+      color: meta.color,
       data: times.map((t, i) => [t.replace(' *', ''), values[i]]),
     }]
   }
@@ -75,12 +93,12 @@ function buildSeries(pred) {
   const futVals = values.slice(splitIdx)
   return [
     {
-      name: `${metricMeta.value.label} 历史`,
-      color: metricMeta.value.color,
+      name: `${meta.label} 历史`,
+      color: meta.color,
       data: histTimes.map((t, i) => [t, histVals[i]]),
     },
     {
-      name: `${metricMeta.value.label} 预测`,
+      name: `${meta.label} 预测`,
       color: '#ff7a59',
       dashed: true,
       data: futTimes.map((t, i) => [t, futVals[i]]),
@@ -91,10 +109,11 @@ function buildSeries(pred) {
 // 预测数据点表格
 const forecastTable = computed(() => {
   if (!currentPrediction.value?.predicted_values) return []
+  const meta = METRICS.find((m) => m.value === currentPrediction.value.metric) || METRICS[0]
   return Object.entries(currentPrediction.value.predicted_values).map(([k, v]) => ({
     step: k,
     value: v,
-    unit: metricMeta.value.unit,
+    unit: meta.unit,
   }))
 })
 
@@ -122,17 +141,40 @@ async function loadDevices() {
 async function loadLatestAndHistory() {
   if (!form.device_id) return
   try {
-    const [latest, hist] = await Promise.all([
-      latestPrediction({ device_id: form.device_id, metric: form.metric }),
-      predictionHistory({ device_id: form.device_id, metric: form.metric, limit: 10 }),
+    // MLP 模式按 model_type 决定要查的 metric 列表;传统模式用 form.metric
+    const metricsToQuery = isMLP.value
+      ? (form.model_name === 'mlp_temp_hum' ? ['temperature', 'humidity'] : ['light'])
+      : [form.metric]
+
+    const latestReqs = metricsToQuery.map((m) =>
+      latestPrediction({
+        device_id: form.device_id,
+        metric: m,
+        model_name: form.model_name,  // 关键:精确过滤对应模型的记录
+      })
+    )
+
+    const [latestArr, hist] = await Promise.all([
+      Promise.all(latestReqs),
+      predictionHistory({
+        device_id: form.device_id,
+        // 传统模式按 metric 过滤;MLP 模式查看该模型所有 metric 的记录
+        ...(isMLP.value ? {} : { metric: form.metric }),
+        model_name: form.model_name,
+        limit: 10,
+      }),
     ])
-    if (latest) {
-      currentPrediction.value = latest
-      chartSeries.value = { value: buildSeries(latest) }
+
+    if (isMLP.value) {
+      const filtered = latestArr.filter(Boolean)
+      currentPrediction.value = filtered[0] || null
+      mlpPredictions.value = filtered.length ? filtered : null
     } else {
-      currentPrediction.value = null
-      chartSeries.value = { value: [] }
+      currentPrediction.value = latestArr[0] || null
+      mlpPredictions.value = null
     }
+
+    chartSeries.value = { value: buildSeries(currentPrediction.value) }
     history.value = hist || []
   } catch (e) {
     // 忽略,首次进入无预测记录
@@ -144,16 +186,28 @@ async function run() {
   loading.value = true
   error.value = ''
   try {
-    const pred = await runPrediction({
+    const result = await runPrediction({
       device_id: form.device_id,
-      metric: form.metric,
       model_name: form.model_name,
+      // MLP 不传 metric(多输出模型),传统预测必传
+      ...(isMLP.value ? {} : { metric: form.metric }),
       horizon_minutes: form.horizon_minutes,
       lookback: form.lookback,
     })
-    currentPrediction.value = pred
-    chartSeries.value = { value: buildSeries(pred) }
-    ElMessage.success(`预测完成 · ${pred.model_name} · ${Object.keys(pred.predicted_values).length} 个时间点`)
+
+    if (isMLP.value) {
+      // MLP 返回数组,取第一个对象作为主展示;mlpPredictions 保存全部
+      currentPrediction.value = result[0]
+      mlpPredictions.value = result
+    } else {
+      currentPrediction.value = result
+      mlpPredictions.value = null
+    }
+    chartSeries.value = { value: buildSeries(currentPrediction.value) }
+    const pointCount = isMLP.value
+      ? Object.keys(result[0]?.predicted_values || {}).length
+      : Object.keys(result?.predicted_values || {}).length
+    ElMessage.success(`预测完成 · ${form.model_name} · ${pointCount} 个时间点`)
     // 刷新历史列表
     loadLatestAndHistory()
   } catch (e) {
@@ -173,12 +227,68 @@ watch(() => form.device_id, () => {
   loadLatestAndHistory()
 })
 watch(() => form.metric, () => {
-  loadLatestAndHistory()
+  // MLP 模式下 metric 选择器隐藏,不触发加载
+  if (!isMLP.value) loadLatestAndHistory()
 })
+// 切换模型时加载对应最新历史 + MLP 状态
+watch(() => form.model_name, () => {
+  loadLatestAndHistory()
+  loadMLPStatus()
+})
+
+// ===== MLP 模型管理 =====
+async function loadMLPStatus() {
+  if (!isMLP.value) {
+    mlpStatusData.value = null
+    return
+  }
+  try {
+    mlpStatusData.value = await mlpStatus({ model_type: form.model_name })
+  } catch {
+    // 错误已由请求拦截器提示,这里静默避免重复弹窗
+    mlpStatusData.value = null
+  }
+}
+
+async function trainMLP() {
+  trainLoading.value = true
+  try {
+    const r = await mlpTrain({ model_type: form.model_name })
+    ElMessage.success(`训练完成 · ${r.num_samples} 样本 · loss=${r.train_loss.toFixed(4)}`)
+    loadMLPStatus()
+  } catch {
+    // 错误已由请求拦截器提示
+  } finally {
+    trainLoading.value = false
+  }
+}
+
+async function finetuneMLP() {
+  try {
+    const r = await mlpFinetune({ model_type: form.model_name })
+    ElMessage.success(r.message)
+  } catch {
+    // 错误已由请求拦截器提示
+  }
+}
+
+async function evaluateMLP() {
+  try {
+    const r = await mlpEvaluate({ model_type: form.model_name })
+    const oldMae = r.old_mae != null ? r.old_mae.toFixed(4) : 'N/A'
+    const winnerText = { new: '新模型胜', old: '旧模型胜', tie: '持平' }[r.winner] || r.winner
+    ElMessage.success(
+      `评估完成 · ${winnerText} · 新MAE=${r.new_mae.toFixed(4)} · 旧MAE=${oldMae} · 样本=${r.num_samples}`
+    )
+  } catch {
+    // 错误已由请求拦截器提示
+  }
+}
 
 onMounted(async () => {
   await loadDevices()
   if (form.device_id) loadLatestAndHistory()
+  if (isMLP.value) loadMLPStatus()
 })
 </script>
 
@@ -193,7 +303,7 @@ onMounted(async () => {
         </div>
         <span class="panel-sub muted">基于机器学习的时间序列趋势预测</span>
       </div>
-      <div class="panel-form">
+      <div class="panel-form" :class="{ 'panel-form-mlp': isMLP }">
         <div class="f-item">
           <label class="label-eyebrow">设备</label>
           <el-select v-model="form.device_id" placeholder="选择设备" filterable>
@@ -205,7 +315,7 @@ onMounted(async () => {
             />
           </el-select>
         </div>
-        <div class="f-item">
+        <div class="f-item" v-if="!isMLP">
           <label class="label-eyebrow">指标</label>
           <el-select v-model="form.metric">
             <el-option v-for="m in availableMetrics" :key="m.value" :label="m.label + ' (' + m.unit + ')'" :value="m.value" />
@@ -234,6 +344,47 @@ onMounted(async () => {
             <span class="run-dot"></span>开始预测
           </el-button>
         </div>
+      </div>
+    </section>
+
+    <!-- MLP 模型管理面板(仅 MLP 模式显示) -->
+    <section v-if="isMLP" class="panel rise rise-1b">
+      <div class="panel-head">
+        <div>
+          <div class="label-eyebrow">MLP Manager</div>
+          <h2 class="panel-title display">MLP 模型管理</h2>
+        </div>
+        <span class="panel-sub muted">{{ form.model_name }}</span>
+      </div>
+      <div class="mlp-actions">
+        <el-button type="primary" @click="trainMLP" :loading="trainLoading">预训练</el-button>
+        <el-button @click="finetuneMLP">微调</el-button>
+        <el-button @click="evaluateMLP">评估</el-button>
+      </div>
+      <div v-if="mlpStatusData" class="mlp-status">
+        <div class="ms-item">
+          <span class="label-eyebrow">样本数</span>
+          <span class="mono">{{ mlpStatusData.num_samples_trained }}</span>
+        </div>
+        <div class="ms-item">
+          <span class="label-eyebrow">train_loss</span>
+          <span class="mono">{{ mlpStatusData.train_loss?.toFixed(4) }}</span>
+        </div>
+        <div class="ms-item">
+          <span class="label-eyebrow">val_loss</span>
+          <span class="mono">{{ mlpStatusData.val_loss?.toFixed(4) }}</span>
+        </div>
+        <div class="ms-item">
+          <span class="label-eyebrow">最后训练</span>
+          <span class="mono sm">{{ mlpStatusData.last_train_time || '—' }}</span>
+        </div>
+        <div class="ms-item" v-if="mlpStatusData.last_finetune_time">
+          <span class="label-eyebrow">最后微调</span>
+          <span class="mono sm">{{ mlpStatusData.last_finetune_time }}</span>
+        </div>
+      </div>
+      <div v-else class="mlp-status muted empty">
+        <span>模型未训练,点击「预训练」开始</span>
       </div>
     </section>
 
@@ -526,8 +677,45 @@ table tr:last-child td { border-bottom: none; }
 .hr-points { font-size: 13px; color: var(--sage-deep); }
 .hr-horizon { font-size: 11px; text-align: right; }
 
+/* MLP 模型管理面板 */
+.panel.rise-1b {
+  margin-bottom: 24px;
+  animation-delay: 0.08s;  /* 介于 .rise-1(0.05s) 与 .rise-2(0.12s) 之间 */
+}
+.panel-form-mlp {
+  grid-template-columns: repeat(4, 1fr) auto;
+}
+.mlp-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.mlp-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 14px 16px;
+  background: var(--sage-tint);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.mlp-status.empty {
+  background: transparent;
+  border-style: dashed;
+  padding: 12px 16px;
+  font-size: 12px;
+}
+.ms-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ms-item .mono { font-size: 14px; color: var(--ink); }
+.ms-item .mono.sm { font-size: 12px; }
+
 @media (max-width: 1100px) {
-  .panel-form { grid-template-columns: repeat(2, 1fr); }
+  .panel-form,
+  .panel-form-mlp { grid-template-columns: repeat(2, 1fr); }
   .stat-band { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
 }
