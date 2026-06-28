@@ -24,6 +24,14 @@ from mqtt_client import GatewayMqttClient
 from serial_reader import SerialReader
 from serial_writer import SerialWriter
 
+# 模块级 stop 信号,供 GUI 等外部调用者触发优雅退出
+_stop_event = threading.Event()
+
+
+def stop_gateway():
+    """外部调用:触发网关优雅退出(供 GUI 或其他集成场景使用)。"""
+    _stop_event.set()
+
 
 def get_or_create_uuid() -> str:
     """读取或生成并持久化网关 UUID。"""
@@ -142,13 +150,20 @@ def main():
     # 发布注册请求(待审主题隔离:此后等待 register/resp)
     mqtt.publish_register()
 
+    _stop_event.clear()
+
     print("[Gateway] 网关运行中,等待后端审批... (Ctrl+C 退出)")
     try:
-        while running[0]:
+        while running[0] and not _stop_event.is_set():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[Gateway] 收到退出信号,正在停止...")
         running[0] = False
+    else:
+        # 由 stop_gateway() 触发退出
+        if _stop_event.is_set():
+            print("\n[Gateway] 收到外部停止信号,正在停止...")
+            running[0] = False
     finally:
         _shutdown(serial_reader, mac_registry, serial_port, mqtt)
         print("[Gateway] 已停止")

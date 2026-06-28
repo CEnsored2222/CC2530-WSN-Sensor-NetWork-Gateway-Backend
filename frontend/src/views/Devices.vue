@@ -2,22 +2,37 @@
 import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listGateways, listPending, approve, reject, unbind } from '@/api/gateway'
+import { listGateways, listAllGateways, approve, reject, bindGateway, unbind } from '@/api/gateway'
 import { listDevices, bindDevice, deviceStream, sendCmd } from '@/api/device'
 import { getSocket } from '@/ws/socket'
 
 const loading = ref(true)
 const gateways = ref([])
-const pending = ref([])
-const pendingVisible = ref(false)
-const pendingLoading = ref(false)
+const allGateways = ref([])          // 全部网关列表(含绑定状态)
+const searchDrawer = ref(false)      // 寻找网关抽屉
+const searchLoading = ref(false)
 
 // 设备命名弹窗
 const nameDialog = reactive({ visible: false, did: null, name: '', loading: false })
-// 审批弹窗
-const approveDialog = reactive({ visible: false, gw: null, name: '', loading: false })
+// 绑定网关弹窗(审批通过后绑定)
+const bindDialog = reactive({ visible: false, gw: null, name: '', loading: false })
 // 数据流抽屉
 const streamDrawer = reactive({ visible: false, device: null, records: [], loading: false })
+
+const STATUS_LABEL = {
+  pending: '待审',
+  approved: '已审批',
+  online: '在线',
+  offline: '离线',
+  rejected: '已拒绝',
+}
+const STATUS_COLOR = {
+  pending: 'var(--amber)',
+  approved: 'var(--sage)',
+  online: 'var(--sage)',
+  offline: 'var(--ink-4)',
+  rejected: 'var(--danger, #e36b8b)',
+}
 
 async function loadGateways() {
   loading.value = true
@@ -34,34 +49,22 @@ async function loadGateways() {
   }
 }
 
-async function openPending() {
-  pendingVisible.value = true
-  pendingLoading.value = true
+async function openSearch() {
+  searchDrawer.value = true
+  searchLoading.value = true
   try {
-    pending.value = await listPending()
+    allGateways.value = await listAllGateways()
   } finally {
-    pendingLoading.value = false
+    searchLoading.value = false
   }
 }
 
-function openApprove(gw) {
-  approveDialog.gw = gw
-  approveDialog.name = ''
-  approveDialog.visible = true
-}
-
-async function doApprove() {
-  approveDialog.loading = true
+async function doApprove(gw) {
   try {
-    await approve(approveDialog.gw.gw_uuid, approveDialog.name)
-    ElMessage.success('已同意网关接入')
-    approveDialog.visible = false
-    await openPending()
-    await loadGateways()
-  } catch (e) {
-  } finally {
-    approveDialog.loading = false
-  }
+    await approve(gw.gw_uuid)
+    ElMessage.success('网关审批通过')
+    await openSearch()  // 刷新全部列表
+  } catch (e) { /* handled by interceptor */ }
 }
 
 async function doReject(gw) {
@@ -71,8 +74,27 @@ async function doReject(gw) {
     if (v === 'cancel') return
     await reject(gw.gw_uuid)
     ElMessage.success('已拒绝')
-    await openPending()
+    await openSearch()
   })
+}
+
+function openBind(gw) {
+  bindDialog.gw = gw
+  bindDialog.name = gw.hostname || ''
+  bindDialog.visible = true
+}
+
+async function doBind() {
+  bindDialog.loading = true
+  try {
+    await bindGateway(bindDialog.gw.gw_uuid, bindDialog.name)
+    ElMessage.success('绑定成功')
+    bindDialog.visible = false
+    await openSearch()
+    await loadGateways()
+  } catch (e) { /* handled */ } finally {
+    bindDialog.loading = false
+  }
 }
 
 async function doUnbind(gw) {
@@ -92,7 +114,7 @@ function openName(dev) {
   nameDialog.visible = true
 }
 
-async function doBind() {
+async function doBindDevice() {
   nameDialog.loading = true
   try {
     await bindDevice(nameDialog.did, { name: nameDialog.name })
@@ -117,11 +139,6 @@ async function openStream(dev) {
 }
 
 // ============ 状态判断(与 Home.vue 保持一致)============
-// device_status 由网关 status 主题推送:字符串 "active"/"sleep"
-// led_status 由网关 led 主题推送:布尔 true/false 或 1/0
-// 注意:不能用 !!device_status(因 !!"sleep" === true 会导致休眠误判为运行)
-
-// ============ 设备类型展示 ============
 const METRIC_LABELS = { temperature: '温度', humidity: '湿度', light: '光照' }
 function typeLabel(typeArr) {
   if (!Array.isArray(typeArr) || !typeArr.length) return null
@@ -134,48 +151,27 @@ function isLedOn(status) {
   return status === true || status === 1 || status === '1' || status === 'true'
 }
 
-// ============ 控制指令:状态驱动 + 3s 超时 + 防抖 ============
-// 设计(指令反馈由本地网关解析,前端不再订阅 cmd_feedback):
-// - dev.led_status / dev.device_status 为「真实状态」,只由 sensor_data 推送更新
-// - 点击按钮 → 进入 pending 态,显示 loading,按钮锁定
-// - pending 期间监听 sensor_data:对应字段变为「目标值」→ 指令成功,清除 pending
-// - 3s 内状态未变为目标值 → 视为失败,ElMessage.error 提示 + 清除 pending(状态自动回滚为原值)
-// - 防抖:pending 中点击直接忽略;同一按钮 500ms 内重复点击忽略
-
-// pending 状态:key = `${devId}:${cmd}`,value = { target, origin, timer }
+// ============ 控制指令 ============
 const pendingCmds = reactive({})
-// 最近点击时间戳:防止双击
 const lastClickTs = reactive({})
 const CLICK_DEBOUNCE_MS = 500
-const FEEDBACK_TIMEOUT_MS = 3000  // 3s 内状态未改变即失败
+const FEEDBACK_TIMEOUT_MS = 3000
 
 function _pendingKey(devId, cmd) {
   return `${devId}:${cmd}`
 }
 
-// 按钮 UI 是否处于 pending 态(显示 loading)
 function isPending(dev, cmd) {
   return !!pendingCmds[_pendingKey(dev.id, cmd)]
 }
 
 async function cmd(dev, c, value) {
-  // 1. 防抖:同一按钮 500ms 内重复点击忽略
   const clickKey = _pendingKey(dev.id, c)
   const now = Date.now()
-  const lastClick = lastClickTs[clickKey] || 0
-  if (now - lastClick < CLICK_DEBOUNCE_MS) {
-    return
-  }
+  if (now - (lastClickTs[clickKey] || 0) < CLICK_DEBOUNCE_MS) return
   lastClickTs[clickKey] = now
+  if (pendingCmds[clickKey]) return
 
-  // 2. pending 中点击忽略
-  if (pendingCmds[clickKey]) {
-    return
-  }
-
-  // 3. 记录目标值与原值,标记 pending,发送指令
-  //    成功判断:3s 内 sensor_data 推送的对应字段等于 target → 成功
-  //    失败判断:3s 超时 → 失败提示(状态未变,自动回滚为 origin)
   const origin = c === 'LED' ? (isLedOn(dev.led_status) ? 1 : 0)
                               : (isDeviceActive(dev.device_status) ? 1 : 0)
   pendingCmds[clickKey] = {
@@ -191,9 +187,7 @@ async function cmd(dev, c, value) {
 
   try {
     await sendCmd(dev.id, c, value)
-    // 不发"已下发"提示,等待状态变化决定成败
   } catch (e) {
-    // API 调用失败 → 立即清除 pending + 错误提示
     if (pendingCmds[clickKey]) {
       clearTimeout(pendingCmds[clickKey].timer)
       delete pendingCmds[clickKey]
@@ -211,7 +205,6 @@ async function toggleStatus(dev) {
   await cmd(dev, 'STATUS', next)
 }
 
-// 在所有网关的设备列表中查找指定设备,返回其所在数组与索引(便于就地更新)
 function findDevice(devId) {
   for (const gw of gateways.value) {
     if (!gw.devices) continue
@@ -221,15 +214,11 @@ function findDevice(devId) {
   return null
 }
 
-// 检查 pending 是否因状态变化而成功
-// field: 'led_status' | 'device_status',value: 当前 sensor_data 推送的值
 function _checkPendingSuccess(devId, field, value) {
   const cmdName = field === 'led_status' ? 'LED' : 'STATUS'
   const key = _pendingKey(devId, cmdName)
   const p = pendingCmds[key]
   if (!p) return
-  // sensor_data 推送的值已变为目标值 → 指令成功
-  // 兼容多种类型:number 1/0、bool、string 'active'/'sleep'
   const v = value
   const t = p.target
   const matched =
@@ -243,8 +232,6 @@ function _checkPendingSuccess(devId, field, value) {
   }
 }
 
-// WS: 设备发现时刷新 + sensor_data 实时同步设备状态 + 指令成功判定
-// 关键:先 off 再 on,避免组件多次挂载导致监听器累积
 function onSocket() {
   const s = getSocket()
   s.off('device_discovered').on('device_discovered', () => loadGateways())
@@ -254,7 +241,6 @@ function onSocket() {
     if (!found) return
     const dev = found.list[found.idx]
 
-    // 同步状态字段,并检查 pending 是否成功
     if ('led_status' in p) {
       dev.led_status = p.led_status
       _checkPendingSuccess(p.device_id, 'led_status', p.led_status)
@@ -275,7 +261,6 @@ function offSocket() {
 onMounted(async () => {
   await loadGateways()
   onSocket()
-  // 从实时监控页面跳转过来时,高亮对应设备卡片
   const route = useRoute()
   const hid = route.query.highlight
   if (hid) {
@@ -290,7 +275,6 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   offSocket()
-  // 清理所有 pending 定时器,防止内存泄漏
   for (const key of Object.keys(pendingCmds)) {
     if (pendingCmds[key]?.timer) clearTimeout(pendingCmds[key].timer)
     delete pendingCmds[key]
@@ -307,7 +291,7 @@ onBeforeUnmount(() => {
         <span class="bar-sub muted">网关 · 节点 · 控制指令</span>
       </div>
       <div class="bar-right">
-        <el-button type="primary" @click="openPending">
+        <el-button type="primary" @click="openSearch">
           <span class="find-ico">◎</span> 寻找网关
         </el-button>
         <el-button @click="loadGateways">刷新</el-button>
@@ -392,49 +376,69 @@ onBeforeUnmount(() => {
       <div v-if="!loading && !gateways.length" class="empty">
         <div class="empty-art"></div>
         <h3 class="display">尚未绑定网关</h3>
-        <p class="muted">点击右上「寻找网关」,查看请求接入的网关并同意连接。</p>
-        <el-button type="primary" @click="openPending">寻找网关</el-button>
+        <p class="muted">点击右上「寻找网关」,查看所有可用网关并绑定。</p>
+        <el-button type="primary" @click="openSearch">寻找网关</el-button>
       </div>
     </div>
 
-    <!-- 寻找网关 抽屉 -->
-    <el-drawer v-model="pendingVisible" title="待审网关" size="480" direction="rtl">
-      <div v-loading="pendingLoading" class="pending-list">
-        <div v-if="!pending.length && !pendingLoading" class="pending-empty muted">
-          暂无待审网关。请确保本地网关已启动并请求接入 EMQX。
+    <!-- 寻找网关 抽屉(展示全部网关) -->
+    <el-drawer v-model="searchDrawer" title="寻找网关" size="520" direction="rtl">
+      <div v-loading="searchLoading" class="search-list">
+        <div v-if="!allGateways.length && !searchLoading" class="search-empty muted">
+          暂无可用网关。请确保本地网关已启动并注册到 EMQX。
         </div>
-        <div v-for="gw in pending" :key="gw.id" class="pending-card">
-          <div class="pc-head">
-            <span class="pc-host display">{{ gw.hostname || '未知主机' }}</span>
-            <span class="pc-tag">待审</span>
+        <div v-for="gw in allGateways" :key="gw.id" class="search-card" :class="{ bound: gw.bound }">
+          <div class="sc-head">
+            <span class="sc-host display">{{ gw.hostname || '未知主机' }}</span>
+            <div class="sc-badges">
+              <span class="sc-tag" :style="{ background: STATUS_COLOR[gw.status] + '1a', color: STATUS_COLOR[gw.status] }">
+                {{ STATUS_LABEL[gw.status] || gw.status }}
+              </span>
+              <span v-if="gw.bound" class="sc-tag sc-bound-tag">已绑定</span>
+            </div>
           </div>
-          <div class="pc-row mono">UUID · {{ gw.gw_uuid }}</div>
-          <div class="pc-row mono">IP · {{ gw.ip || '—' }}</div>
-          <div class="pc-row mono">注册 · {{ gw.created_at }}</div>
-          <div class="pc-actions">
-            <el-button type="primary" size="small" @click="openApprove(gw)">同意接入</el-button>
-            <el-button size="small" @click="doReject(gw)">拒绝</el-button>
+          <div class="sc-row mono">UUID · {{ gw.gw_uuid }}</div>
+          <div class="sc-row mono">IP · {{ gw.ip || '—' }}</div>
+          <div v-if="gw.bind_name" class="sc-row mono">自定义名称 · {{ gw.bind_name }}</div>
+          <div class="sc-actions">
+            <!-- pending: 审批 + 拒绝 -->
+            <template v-if="gw.status === 'pending'">
+              <el-button type="primary" size="small" @click="doApprove(gw)">审批通过</el-button>
+              <el-button size="small" @click="doReject(gw)">拒绝</el-button>
+            </template>
+            <!-- approved/online 且未绑定: 绑定按钮 -->
+            <template v-else-if="(gw.status === 'approved' || gw.status === 'online') && !gw.bound">
+              <el-button type="primary" size="small" @click="openBind(gw)">绑定此网关</el-button>
+            </template>
+            <!-- 已绑定: 仅显示状态,无操作 -->
+            <template v-else-if="gw.bound">
+              <span class="muted" style="font-size:12px">您已绑定此网关,如需解绑请返回主页面操作</span>
+            </template>
+            <!-- rejected/offline: 无可用操作 -->
+            <template v-else>
+              <span class="muted" style="font-size:12px">此网关暂不可绑定</span>
+            </template>
           </div>
         </div>
       </div>
     </el-drawer>
+
+    <!-- 绑定网关弹窗 -->
+    <el-dialog v-model="bindDialog.visible" title="绑定网关" width="420">
+      <p class="muted" style="margin-bottom:14px">为网关设置一个自定义名称(可选),确认后即可绑定。</p>
+      <el-input v-model="bindDialog.name" placeholder="如:客厅网关" maxlength="32" show-word-limit />
+      <template #footer>
+        <el-button @click="bindDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="bindDialog.loading" @click="doBind">确认绑定</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 命名弹窗 -->
     <el-dialog v-model="nameDialog.visible" title="命名并绑定设备" width="420">
       <el-input v-model="nameDialog.name" placeholder="为设备起一个名字" maxlength="32" show-word-limit />
       <template #footer>
         <el-button @click="nameDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="nameDialog.loading" @click="doBind">绑定</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 审批弹窗 -->
-    <el-dialog v-model="approveDialog.visible" title="同意网关接入" width="420">
-      <p class="muted" style="margin-bottom:14px">为网关命名(可选),确认后将下发审批结果。</p>
-      <el-input v-model="approveDialog.name" placeholder="如:客厅网关" maxlength="32" show-word-limit />
-      <template #footer>
-        <el-button @click="approveDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="approveDialog.loading" @click="doApprove">同意接入</el-button>
+        <el-button type="primary" :loading="nameDialog.loading" @click="doBindDevice">绑定</el-button>
       </template>
     </el-dialog>
 
@@ -571,8 +575,6 @@ onBeforeUnmount(() => {
   font-family: var(--font-sans);
 }
 .ctrl-btn:hover { border-color: var(--sage); color: var(--sage-deep); }
-
-/* pending 态:loading + 不可点击 */
 .ctrl-btn.pending {
   cursor: progress;
   opacity: 0.7;
@@ -601,11 +603,7 @@ onBeforeUnmount(() => {
   letter-spacing: 2px;
   font-family: var(--font-mono);
 }
-.ctrl-btn:disabled {
-  cursor: progress;
-}
-
-/* LED 按钮:亮 = sage 实心发光 */
+.ctrl-btn:disabled { cursor: progress; }
 .ctrl-btn.led.on {
   background: var(--sage);
   color: #06141a;
@@ -620,8 +618,6 @@ onBeforeUnmount(() => {
   background: #fff;
   box-shadow: 0 0 6px rgba(255,255,255,0.8), 0 0 12px var(--sage-soft);
 }
-
-/* 状态按钮:活跃 = sage 绿色实心发光;休眠 = 中性灰 */
 .ctrl-btn.st.on {
   background: var(--sage);
   color: #06141a;
@@ -637,28 +633,34 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 6px rgba(255,255,255,0.8), 0 0 12px var(--sage-soft);
 }
 
-/* 待审列表 */
-.pending-list { padding: 0 4px; }
-.pending-empty { text-align: center; padding: 40px 0; font-size: 13px; }
-.pending-card {
+/* 寻找网关列表 */
+.search-list { padding: 0 4px; }
+.search-empty { text-align: center; padding: 40px 0; font-size: 13px; }
+.search-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 18px;
   margin-bottom: 14px;
   background: var(--surface-soft);
 }
-.pc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.pc-host { font-size: 18px; font-weight: 500; }
-.pc-tag {
+.search-card.bound {
+  border-color: var(--sage);
+}
+.sc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }
+.sc-host { font-size: 18px; font-weight: 500; }
+.sc-badges { display: flex; gap: 6px; align-items: center; }
+.sc-tag {
   font-size: 9px;
   padding: 2px 10px;
   border-radius: 999px;
   letter-spacing: 0.08em;
-  background: var(--amber-soft);
-  color: var(--amber);
 }
-.pc-row { font-size: 10px; color: var(--ink-3); margin-bottom: 4px; letter-spacing: 0.03em; }
-.pc-actions { display: flex; gap: 8px; margin-top: 14px; }
+.sc-bound-tag {
+  background: var(--sage-soft) !important;
+  color: var(--sage-deep) !important;
+}
+.sc-row { font-size: 10px; color: var(--ink-3); margin-bottom: 4px; letter-spacing: 0.03em; }
+.sc-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 
 /* 数据流 */
 .stream-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
@@ -673,9 +675,6 @@ onBeforeUnmount(() => {
 .sr-time { font-size: 11px; color: var(--ink-4); }
 .sr-reads { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); }
 .sr-reads b { font-weight: 400; color: var(--ink); margin-left: 3px; }
-.sr-led { padding: 1px 8px; border-radius: 999px; background: var(--paper-deep); }
-.sr-led.on { background: var(--sage-soft); color: var(--sage-deep); }
-.sr-st { text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; align-self: center; }
 
 /* 空 */
 .empty {
@@ -690,4 +689,8 @@ onBeforeUnmount(() => {
 }
 .empty h3 { font-size: 24px; font-weight: 400; margin-bottom: 10px; }
 .empty p { margin-bottom: 22px; max-width: 360px; }
+
+@media (max-width: 1100px) {
+  .dev-grid { grid-template-columns: 1fr; }
+}
 </style>

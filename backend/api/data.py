@@ -10,6 +10,7 @@ from models.device import Device
 from models.gateway import Gateway
 from models.sensor_data import SensorData
 from utils.auth import jwt_required
+from utils.gateway_permission import get_user_gateway_ids, check_user_bound_to_gateway
 
 bp = Blueprint("data", __name__)
 
@@ -25,7 +26,7 @@ def realtime():
     状态字段(led_status/device_status)仅从 data_buffer 取(不入库,由 MQTT led/status
     主题订阅直推)。保证与设备管理页面的状态数据源完全一致。
     """
-    gw_ids = [gw.id for gw in Gateway.query.filter_by(user_id=g.current_user.id).all()]
+    gw_ids = get_user_gateway_ids(g.current_user.id)
     if not gw_ids:
         return jsonify({"devices": []})
     devs = Device.query.filter(Device.gateway_id.in_(gw_ids)).all()
@@ -80,7 +81,7 @@ def history():
         return jsonify({"error": "参数错误(device_id + metric 必填,metric ∈ temperature/humidity/light)"}), 400
 
     dev = db.session.get(Device, device_id)
-    if not dev or dev.gateway.user_id != g.current_user.id:
+    if not dev or not check_user_bound_to_gateway(g.current_user.id, dev.gateway_id):
         return jsonify({"error": "设备不存在"}), 404
 
     q = SensorData.query.filter_by(device_id=device_id)
@@ -106,8 +107,9 @@ def history():
 @jwt_required
 def overview():
     """总览统计:网关数/设备数/在线设备"""
-    gws = Gateway.query.filter_by(user_id=g.current_user.id).all()
-    gw_ids = [gw.id for gw in gws]
+    gw_ids = get_user_gateway_ids(g.current_user.id)
+    gws = [db.session.get(Gateway, gid) for gid in gw_ids]
+    gws = [gw for gw in gws if gw is not None]
     devs = Device.query.filter(Device.gateway_id.in_(gw_ids)).all() if gw_ids else []
     bound = [d for d in devs if d.bound]
     return jsonify({

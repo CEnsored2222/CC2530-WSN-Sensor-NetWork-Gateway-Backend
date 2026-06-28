@@ -10,6 +10,7 @@ from flask import Blueprint, g, jsonify, request
 import extensions
 from extensions import db, socketio
 from models.gateway import Gateway
+from models.user_gateway import UserGateway
 from models.operation_log import OperationLog
 from models.subscription import Subscription
 from mqtt import topics
@@ -56,15 +57,21 @@ def toggle(metric):
 
     # 下发订阅配置给所有已绑定网关(可选优化,网关据此停止转发)
     enabled = [s.metric for s in Subscription.query.filter_by(subscribed=True).all()]
-    for gw in Gateway.query.filter(Gateway.user_id.isnot(None)).all():
+    # 查询所有有绑定用户的网关,并收集唯一网关列表
+    bound_gw_ids = set(ug.gateway_id for ug in UserGateway.query.all())
+    for gw_id in bound_gw_ids:
+        gw = db.session.get(Gateway, gw_id)
+        if not gw:
+            continue
         extensions.mqtt_client.publish(
             topics.subscription_topic(gw.gw_uuid),
             {"metrics": enabled, "ts": int(time.time())},
             qos=1, retain=True,
         )
-        # 通知前端清除已取消订阅的指标数据
-        socketio.emit("subscription_updated", {"enabled": enabled},
-                      room=f"user_{gw.user_id}")
+        # 通知所有绑定用户清除已取消订阅的指标数据
+        for ug in UserGateway.query.filter_by(gateway_id=gw_id).all():
+            socketio.emit("subscription_updated", {"enabled": enabled},
+                          room=f"user_{ug.user_id}")
 
     db.session.add(OperationLog(
         user_id=g.current_user.id, action="toggle_subscription",

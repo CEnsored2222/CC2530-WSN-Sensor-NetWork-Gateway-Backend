@@ -8,8 +8,6 @@ class Gateway(db.Model):
 
     id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     gw_uuid = db.Column(db.String(36), unique=True, nullable=False)
-    user_id = db.Column(db.BigInteger, db.ForeignKey("users.id"), nullable=True)
-    name = db.Column(db.String(64), nullable=True)
     status = db.Column(
         db.Enum("pending", "approved", "rejected", "offline", "online"),
         nullable=False, default="pending",
@@ -18,7 +16,6 @@ class Gateway(db.Model):
     ip = db.Column(db.String(45), nullable=True)
     last_seen = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, server_default=db.func.now())
-    approved_at = db.Column(db.DateTime, nullable=True)
 
     devices = db.relationship("Device", backref="gateway", lazy="dynamic")
 
@@ -26,12 +23,9 @@ class Gateway(db.Model):
         return {
             "id": self.id,
             "gw_uuid": self.gw_uuid,
-            "user_id": self.user_id,
-            "name": self.name,
             "status": self.status,
             "hostname": self.hostname,
             "ip": self.ip,
             "last_seen": self.last_seen.strftime("%Y-%m-%d %H:%M:%S") if self.last_seen else None,
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None,
-            "approved_at": self.approved_at.strftime("%Y-%m-%d %H:%M:%S") if self.approved_at else None,
         }

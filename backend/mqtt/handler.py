@@ -4,14 +4,18 @@
 收到报文后:
 - register:落库网关(status=pending),WS 广播 gateway_pending 给所有用户
 - heartbeat:更新网关 last_seen
-- discovery:落库设备(不存在则建),WS 推送 device_discovered 给绑定用户
-- 数据类(temp/hum/light/led/status):更新 data_buffer + 实时 WS 推送 sensor_data
+- discovery:落库设备(不存在则建),WS 推送 device_discovered 给所有绑定用户
+- 数据类(temp/hum/light/led/status):更新 data_buffer + 实时 WS 推送 sensor_data 给所有绑定用户
 
 状态管理统一:
 - led_status / device_status 仅在 data_buffer 内存缓冲中保留,不入 sensor_data 表
 - flush 入库时只写 temperature/humidity/light(去空+去重),状态字段不落库
 - 前端通过 sensor_data WS 事件中的 led_status/device_status 获取实时状态
 - 指令反馈由本地网关解析后通过 led/status 主题上报(feedback 主题已删除)
+
+多用户绑定说明:
+- 一个网关可被多个用户绑定(通过 user_gateways 中间表)
+- 数据推送时:查询所有绑定用户,逐一发送 WS 事件到各自 user_{id} 房间
 
 所有 DB 操作在 app context 中执行(on_message 运行于 paho 线程)。"""
 import json
@@ -21,6 +25,7 @@ from datetime import datetime
 from extensions import db, socketio
 import extensions
 from models.gateway import Gateway
+from models.user_gateway import UserGateway
 from models.device import Device
 from models.subscription import Subscription
 from mqtt import topics
@@ -29,6 +34,12 @@ from services.alert_engine import alert_engine
 _REGISTER_RE = re.compile(rf"^{topics.TOPIC_PREFIX}/([^/]+)/register$")
 _HEARTBEAT_RE = re.compile(rf"^{topics.TOPIC_PREFIX}/([^/]+)/heartbeat$")
 _DEVICE_RE = re.compile(rf"^{topics.TOPIC_PREFIX}/([^/]+)/device/([^/]+)/([^/]+)$")
+
+
+def _get_bound_user_ids(gateway_id):
+    """查询绑定指定网关的所有用户 ID 列表。"""
+    ugs = UserGateway.query.filter_by(gateway_id=gateway_id).all()
+    return [ug.user_id for ug in ugs]
 
 
 class MqttHandler:
@@ -94,18 +105,24 @@ class MqttHandler:
             gw.hostname = data.get("hostname", gw.hostname)
             gw.ip = data.get("ip", gw.ip)
             gw.last_seen = datetime.now()
-            # 解绑后重新上线:从 offline 回到 pending,重新等待审批
-            if gw.status in ("offline", "rejected") and gw.user_id is None:
-                gw.status = "pending"
+            # 解绑后重新上线:从 offline/rejected 回到 pending,重新等待审批
+            if gw.status in ("offline", "rejected"):
+                # 检查是否有绑定用户
+                bound_users = _get_bound_user_ids(gw.id)
+                if bound_users:
+                    # 有绑定用户:自动审批,恢复在线
+                    gw.status = "approved"
+                else:
+                    gw.status = "pending"
             db.session.commit()
 
-        # 已绑定用户的网关重启后自动重发审批结果,无需用户再次审批
-        # 注意:运行中网关 status 为 online(心跳更新),所以用 user_id 判断而非 status
-        if gw.user_id is not None and gw.status in ("approved", "online"):
+        # 已绑定的网关重启后自动重发审批结果,无需用户再次审批
+        bound_users = _get_bound_user_ids(gw.id)
+        if bound_users and gw.status in ("approved", "online"):
             extensions.mqtt_client.publish(
                 topics.register_resp_topic(gw_uuid),
                 {"gw_uuid": gw_uuid, "result": "approved",
-                 "user_id": gw.user_id, "ts": int(datetime.now().timestamp())},
+                 "ts": int(datetime.now().timestamp())},
                 qos=1,
             )
             print(f"[MQTT] 已绑定网关 {gw_uuid} 重启,自动重发审批结果")
@@ -144,9 +161,10 @@ class MqttHandler:
         if not gw:
             return
         dev = self._get_or_create_device(gw, mac)
-        if gw.user_id:
+        # 向所有绑定用户推送设备发现事件
+        for uid in _get_bound_user_ids(gw.id):
             socketio.emit("device_discovered", {"device": dev.to_dict()},
-                          room=f"user_{gw.user_id}")
+                          room=f"user_{uid}")
 
     # ---------- 设备类型推断 ----------
     # device.type 现在是一个 JSON 数组,存储该设备可采集的指标列表。
@@ -176,13 +194,18 @@ class MqttHandler:
 
     def _handle_data(self, gw_uuid, mac, suffix, data):
         gw = Gateway.query.filter_by(gw_uuid=gw_uuid).first()
-        if not gw or not gw.user_id:
-            return  # 未绑定用户的网关数据不处理
+        if not gw:
+            return
+
+        # 查询所有绑定用户
+        bound_user_ids = _get_bound_user_ids(gw.id)
+        if not bound_user_ids:
+            return  # 无绑定用户则跳过
+
         dev = self._get_or_create_device(gw, mac)
         dev.last_seen = datetime.now()
 
         # 根据收到的数据类型动态推断并更新设备 type
-        # 累积设备可上报的数据类型(温度/湿度/光照),不包含 LED/状态等控制字段
         new_type = self._infer_device_type(dev, suffix)
         if new_type is not None and sorted(dev.type or []) != sorted(new_type):
             dev.type = new_type
@@ -215,16 +238,19 @@ class MqttHandler:
             val = rec.get(f)
             payload[f] = val if m in enabled else None
 
-        socketio.emit("sensor_data", payload, room=f"user_{gw.user_id}")
+        # 向所有绑定用户逐一推送 sensor_data
+        for uid in bound_user_ids:
+            socketio.emit("sensor_data", payload, room=f"user_{uid}")
 
-        # 告警引擎:对当前设备最新字段集合评估启用规则
-        try:
-            alert_engine.evaluate(
-                device_id=dev.id,
-                user_id=gw.user_id,
-                payload=rec,
-                dev_mac=mac,
-                ts=ts,
-            )
-        except Exception as e:
-            print(f"[Alert] 评估异常 dev={mac} err={e}")
+        # 告警引擎:对当前设备最新字段集合评估启用规则(对每个绑定用户评估)
+        for uid in bound_user_ids:
+            try:
+                alert_engine.evaluate(
+                    device_id=dev.id,
+                    user_id=uid,
+                    payload=rec,
+                    dev_mac=mac,
+                    ts=ts,
+                )
+            except Exception as e:
+                print(f"[Alert] 评估异常 dev={mac} user={uid} err={e}")

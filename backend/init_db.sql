@@ -30,26 +30,37 @@ INSERT IGNORE INTO users (username, password_hash, email, email_verified, role)
 VALUES ('admin', '$2b$12$G0ZsjR4ZLiYOZSlzB0XRzOFhcQmatDYdsq4GGhNJ3z0i0m9.7Fg/m', 'admin@atmos.local', 1, 'admin');
 
 -- ============================================
--- 2. gateways  网关表
+-- 2. gateways  网关表（状态独立管理，不再与单一用户绑定）
 -- ============================================
 CREATE TABLE IF NOT EXISTS gateways (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
     gw_uuid     VARCHAR(36)     NOT NULL,
-    user_id     BIGINT          NULL,
-    name        VARCHAR(64)     NULL,
     status      ENUM('pending','approved','rejected','offline','online') NOT NULL DEFAULT 'pending',
     hostname    VARCHAR(128)    NULL,
     ip          VARCHAR(45)     NULL,
     last_seen   DATETIME        NULL,
     created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    approved_at DATETIME        NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_gw_uuid (gw_uuid),
-    CONSTRAINT fk_gateways_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    UNIQUE KEY uk_gw_uuid (gw_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 3. devices  设备表
+-- 3. user_gateways  用户-网关绑定中间表（多对多）
+-- ============================================
+CREATE TABLE IF NOT EXISTS user_gateways (
+    id          BIGINT          NOT NULL AUTO_INCREMENT,
+    user_id     BIGINT          NOT NULL,
+    gateway_id  BIGINT          NOT NULL,
+    name        VARCHAR(64)     NULL COMMENT '用户自定义网关名称',
+    created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_gateway (user_id, gateway_id),
+    CONSTRAINT fk_ug_user    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
+    CONSTRAINT fk_ug_gateway FOREIGN KEY (gateway_id) REFERENCES gateways(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 4. devices  设备表
 -- ============================================
 CREATE TABLE IF NOT EXISTS devices (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
@@ -66,7 +77,7 @@ CREATE TABLE IF NOT EXISTS devices (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 4. subscriptions  订阅管理表
+-- 5. subscriptions  订阅管理表
 -- ============================================
 CREATE TABLE IF NOT EXISTS subscriptions (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
@@ -89,7 +100,7 @@ INSERT INTO subscriptions (metric, subscribed) VALUES
 ON DUPLICATE KEY UPDATE subscribed = VALUES(subscribed);
 
 -- ============================================
--- 5. sensor_data  传感器数据表
+-- 6. sensor_data  传感器数据表
 -- ============================================
 CREATE TABLE IF NOT EXISTS sensor_data (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
@@ -104,7 +115,7 @@ CREATE TABLE IF NOT EXISTS sensor_data (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 6. predictions  预测结果表
+-- 7. predictions  预测结果表
 -- ============================================
 CREATE TABLE IF NOT EXISTS predictions (
     id              BIGINT          NOT NULL AUTO_INCREMENT,
@@ -123,7 +134,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 7. operation_logs  操作日志表
+-- 8. operation_logs  操作日志表
 -- ============================================
 CREATE TABLE IF NOT EXISTS operation_logs (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
@@ -139,7 +150,7 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 8. alert_rules  预警规则表
+-- 9. alert_rules  预警规则表
 -- ============================================
 CREATE TABLE IF NOT EXISTS alert_rules (
     id              BIGINT          NOT NULL AUTO_INCREMENT,
@@ -161,7 +172,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 9. alert_rule_targets  预警规则 - 设备绑定表
+-- 10. alert_rule_targets  预警规则 - 设备绑定表
 -- ============================================
 CREATE TABLE IF NOT EXISTS alert_rule_targets (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
@@ -178,7 +189,7 @@ CREATE TABLE IF NOT EXISTS alert_rule_targets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 10. ml_models  MLP 模型状态表(固定2行,UPSERT,主键 model_type)
+-- 11. ml_models  MLP 模型状态表(固定2行,UPSERT,主键 model_type)
 -- ============================================
 CREATE TABLE IF NOT EXISTS ml_models (
     model_type         ENUM('mlp_temp_hum','mlp_light') NOT NULL,
@@ -193,7 +204,7 @@ CREATE TABLE IF NOT EXISTS ml_models (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 11. ml_evaluations  MLP 评估事件表(追加INSERT)
+-- 12. ml_evaluations  MLP 评估事件表(追加INSERT)
 -- ============================================
 CREATE TABLE IF NOT EXISTS ml_evaluations (
     id            BIGINT NOT NULL AUTO_INCREMENT,

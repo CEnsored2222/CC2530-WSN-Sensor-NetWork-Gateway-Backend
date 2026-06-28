@@ -14,6 +14,7 @@ from models.device import Device
 from models.prediction import Prediction
 from models.sensor_data import SensorData
 from utils.auth import jwt_required
+from utils.gateway_permission import check_user_bound_to_gateway
 from ml import predictor
 
 bp = Blueprint("prediction", __name__)
@@ -27,7 +28,7 @@ _DEFAULT_LOOKBACK = 144
 
 def _device_or_404(device_id):
     dev = db.session.get(Device, device_id)
-    if not dev or dev.gateway.user_id != g.current_user.id:
+    if not dev or not check_user_bound_to_gateway(g.current_user.id, dev.gateway_id):
         return None, (jsonify({"error": "设备不存在或无权访问"}), 404)
     return dev, None
 

@@ -13,6 +13,7 @@ from models.operation_log import OperationLog
 from models.sensor_data import SensorData
 from mqtt import topics
 from utils.auth import jwt_required
+from utils.gateway_permission import check_user_bound_to_gateway
 
 bp = Blueprint("device", __name__)
 
@@ -20,14 +21,25 @@ _IP = lambda: request.remote_addr or ""
 
 
 def _device_owned(dev):
-    return dev is not None and dev.gateway is not None and dev.gateway.user_id == g.current_user.id
+    """检查设备是否属于当前用户(通过 user_gateways 中间表)。
+
+    设备所属的网关必须已被当前用户绑定。
+    """
+    if dev is None:
+        return False
+    gw_id = dev.gateway_id if hasattr(dev, 'gateway_id') else (
+        dev.gateway.id if dev.gateway else None
+    )
+    if gw_id is None:
+        return False
+    return check_user_bound_to_gateway(g.current_user.id, gw_id)
 
 
 @bp.get("/gateways/<int:gw_id>/devices")
 @jwt_required
 def list_devices(gw_id):
     gw = db.session.get(Gateway, gw_id)
-    if not gw or gw.user_id != g.current_user.id:
+    if not gw or not check_user_bound_to_gateway(g.current_user.id, gw_id):
         return jsonify({"error": "网关不存在"}), 404
     devs = Device.query.filter_by(gateway_id=gw_id).all()
     result = []
