@@ -20,7 +20,7 @@ from ml import predictor
 bp = Blueprint("prediction", __name__)
 
 _VALID_METRICS = ("temperature", "humidity", "light")
-_VALID_MODELS = ("linear", "svr")
+_VALID_MODELS = ("linear", "svr", "knn", "rf")
 _MLP_MODELS = ("mlp_temp_hum", "mlp_light")
 # 默认拉取最近 144 条历史数据(10min/条 × 144 = 24 小时)
 _DEFAULT_LOOKBACK = 144

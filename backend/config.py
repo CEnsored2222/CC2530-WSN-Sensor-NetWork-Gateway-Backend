@@ -11,7 +11,7 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "DATABASE_URL",
-        "mysql+pymysql://root:1234@127.0.0.1:3306/smart_home?charset=utf8mb4",
+        "mysql+pymysql://root:1234@101.132.119.124:3306/smart_home?charset=utf8mb4",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -48,8 +48,8 @@ class Config:
     MLP_DEFAULT_HORIZON = 60             # 默认预测60分钟
     MLP_TRAIN_LR = 1e-3
     MLP_FINETUNE_LR = 1e-5               # 微调学习率更小,避免破坏预训练权重
-    MLP_EPOCHS = 100
-    MLP_EARLY_STOP_PATIENCE = 20
+    MLP_EPOCHS = 300                      # 预训练 epoch 数(增强特征需更多轮次收敛)
+    MLP_EARLY_STOP_PATIENCE = 30          # 早停耐心(配合 epochs 增大)
     MLP_FINETUNE_EPOCHS = 5              # 微调 epoch 数
     MLP_MIN_SAMPLES = 12                 # 预训练最小样本数
     MLP_BATCH_SIZE = 16                  # 训练 batch_size 上限(实际用 max(2, min(16, len(X))))

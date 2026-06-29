@@ -23,7 +23,9 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from config import Config
-from ml.mlp_models import MODEL_CLASSES, _INPUT_COLUMNS, _OUTPUT_COLUMNS
+from ml.mlp_models import (MODEL_CLASSES, _INPUT_COLUMNS, _OUTPUT_COLUMNS,
+                           LAG_WINDOW, DIFF_ORDERS, ROLLING_WINDOW, PER_COL_FEATURES,
+                           NUM_FORECAST_STEPS)
 
 # ============================================================
 # 模块级:ONNX Session 缓存(避免每次推理 50-100ms 创建开销)
@@ -42,6 +44,38 @@ def _to_daily_seconds(dt):
         return dt.hour * 3600 + dt.minute * 60 + dt.second
     # ts 是 unix 时间戳(环形缓冲区) → 转为 datetime 再取日内秒数
     return _to_daily_seconds(datetime.fromtimestamp(dt))
+
+
+def _encode_time_cyclic(t_sec):
+    """将日内秒数编码为 (sin, cos),捕捉日内周期(昼夜温差等)。"""
+    import math
+    phase = (t_sec % 86400.0) / 86400.0 * 2 * math.pi
+    return math.sin(phase), math.cos(phase)
+
+
+def _build_col_features(seq, i, col):
+    """为单个输出列构造 [滞后窗口, 差分, 滚动统计] 特征(共 PER_COL_FEATURES 个)。
+
+    seq: 该列的值序列(已对齐到全局时间轴)
+    i: 当前索引
+    返回:list[float],长度 = LAG_WINDOW+1 + DIFF_ORDERS + 2
+    """
+    # 滞后窗口 [t-W .. t]
+    lag = list(seq[i - LAG_WINDOW : i + 1])
+    # 差分 Δy(变化率)
+    diffs = []
+    for d in range(DIFF_ORDERS):
+        idx = i - d
+        if idx - 1 >= 0:
+            diffs.append(seq[idx] - seq[idx - 1])
+        else:
+            diffs.append(0.0)
+    # 滚动统计
+    wv = seq[max(0, i - ROLLING_WINDOW + 1) : i + 1]
+    import numpy as np
+    roll_mean = float(np.mean(wv)) if wv else 0.0
+    roll_std = float(np.std(wv)) if wv else 0.0
+    return lag + diffs + [roll_mean, roll_std]
 
 
 def load_session(onnx_path, model_type):
@@ -120,52 +154,73 @@ class ONNXTrainer:
 
     # ---------- 特征构造 ----------
     def _build_features_from_db(self, rows, model_type):
-        """从 sensor_data 行构造 (X, y),t_sec 用日内秒数。
+        """从 sensor_data 行构造增强特征 (X, y) + 残差学习(预测 Δy)。
 
-        NULL 填 0(与现有 predictor 一致),目标列全 NULL 的行跳过。
-        y 列顺序与 _OUTPUT_COLUMNS 严格对齐。
+        特征:[sin_t, cos_t, <col_0 的 滞后+差分+滚动>, <col_1 的 ...>, ...]
+        目标:残差 Δy = next_col - cur_col(让模型学变化量,波动更贴合)
+        NULL 填 0,y 列顺序与 _OUTPUT_COLUMNS 严格对齐。
         """
         X, y = [], []
         out_cols = _OUTPUT_COLUMNS[model_type]
+        LAG = LAG_WINDOW
+        # 预提取每列的值序列(便于算差分和滚动统计)
+        col_seqs = {col: [] for col in out_cols}
         for r in rows:
+            for col in out_cols:
+                v = r.get(col)
+                col_seqs[col].append(float(v) if v is not None else 0.0)
+        # 时序配对:用 [t-LAG .. t] 的窗口预测未来 NUM_FORECAST_STEPS 步(直接多步)
+        for i in range(LAG, len(rows) - NUM_FORECAST_STEPS):
+            r = rows[i]
             if not r.get("recorded_at"):
                 continue
             t_sec = _to_daily_seconds(r["recorded_at"])
-            temp = float(r.get("temperature") or 0)
-            hum = float(r.get("humidity") or 0)
-            light = float(r.get("light") or 0)
-            if model_type == "mlp_temp_hum":
-                if r.get("temperature") is None and r.get("humidity") is None:
-                    continue
-                X.append([t_sec, temp, hum])
-                y.append([temp, hum])
-            else:
-                if r.get("light") is None:
-                    continue
-                X.append([t_sec, light])
-                y.append([light])
+            sin_t, cos_t = _encode_time_cyclic(t_sec)
+            # 构造每个输出列的特征
+            feat = [sin_t, cos_t]
+            for col in out_cols:
+                feat.extend(_build_col_features(col_seqs[col], i, col))
+            # 多步目标:每个输出列未来 NUM_FORECAST_STEPS 步的绝对值
+            # y 列顺序:[col_0 的 6 步, col_1 的 6 步, ...]
+            target = []
+            for col in out_cols:
+                for s in range(NUM_FORECAST_STEPS):
+                    v = rows[i + 1 + s].get(col)
+                    target.append(float(v) if v is not None else 0.0)
+            X.append(feat)
+            y.append(target)
         if not X:
             return None, None
         return np.array(X, dtype=float), np.array(y, dtype=float)
 
     def _build_features_from_ringbuffer(self, data, model_type):
-        """从环形缓冲区数据 [(ts, device_id, fields), ...] 构造 (X, y)。"""
+        """从环形缓冲区数据构造增强特征 (X, y)(时序:x_t → y_{t+1})。"""
         X, y = [], []
-        for ts, _did, fields in data:
+        out_cols = _OUTPUT_COLUMNS[model_type]
+        LAG = LAG_WINDOW
+        # 预提取每列的值序列
+        col_seqs = {col: [] for col in out_cols}
+        for _ts, _did, fields in data:
+            for col in out_cols:
+                v = fields.get(col)
+                col_seqs[col].append(float(v) if v is not None else 0.0)
+        # 时序配对:用 [t-LAG .. t] 的窗口预测未来 NUM_FORECAST_STEPS 步(直接多步)
+        for i in range(LAG, len(data) - NUM_FORECAST_STEPS):
+            ts, _did, fields = data[i]
             t_sec = _to_daily_seconds(ts)
-            temp = float(fields.get("temperature") or 0)
-            hum = float(fields.get("humidity") or 0)
-            light = float(fields.get("light") or 0)
-            if model_type == "mlp_temp_hum":
-                if fields.get("temperature") is None and fields.get("humidity") is None:
-                    continue
-                X.append([t_sec, temp, hum])
-                y.append([temp, hum])
-            else:
-                if fields.get("light") is None:
-                    continue
-                X.append([t_sec, light])
-                y.append([light])
+            sin_t, cos_t = _encode_time_cyclic(t_sec)
+            # 构造每个输出列的特征
+            feat = [sin_t, cos_t]
+            for col in out_cols:
+                feat.extend(_build_col_features(col_seqs[col], i, col))
+            # 多步目标:每个输出列未来 NUM_FORECAST_STEPS 步的绝对值
+            target = []
+            for col in out_cols:
+                for s in range(NUM_FORECAST_STEPS):
+                    v = data[i + 1 + s][2].get(col)
+                    target.append(float(v) if v is not None else 0.0)
+            X.append(feat)
+            y.append(target)
         if not X:
             return None, None
         return np.array(X, dtype=float), np.array(y, dtype=float)
@@ -270,6 +325,9 @@ class ONNXTrainer:
                 for i in range(0, len(X_t), batch_size):
                     bx = X_t[i:i+batch_size]
                     by = y_t[i:i+batch_size]
+                    # BatchNorm1d 训练态至少需要 2 个样本,跳过尾部 size=1 的 batch
+                    if len(bx) < 2:
+                        continue
                     optimizer.zero_grad()
                     out = model(bx)
                     loss = criterion(out, by)
@@ -604,38 +662,47 @@ class ONNXTrainer:
         out_cols = _OUTPUT_COLUMNS[model_type]
         session, input_name = load_session(self._onnx_path(model_type), model_type)
 
-        # 取最后一条作为基准
+        # 取最后一条作为基准时间
         last_row = rows[-1]
         last_dt = last_row.get("recorded_at") or datetime.now()
         t_sec_last = _to_daily_seconds(last_dt)
 
-        # 构造基准输入向量
-        if model_type == "mlp_temp_hum":
-            base = [t_sec_last, float(last_row.get("temperature") or 0),
-                    float(last_row.get("humidity") or 0)]
-        else:
-            base = [t_sec_last, float(last_row.get("light") or 0)]
+        # 初始化每列的历史序列(rows 最后足够长的真实值,用于构造 lag/diffs/roll)
+        # 残差学习:模型输出 Δy,yhat = last_real + Δy(让模型学变化量,波动更贴合)
+        keep_len = LAG_WINDOW + max(DIFF_ORDERS, ROLLING_WINDOW) + 2
+        hist_seqs = {}
+        for col in out_cols:
+            seq = []
+            for r in rows[-keep_len:]:
+                v = r.get(col)
+                seq.append(float(v) if v is not None else 0.0)
+            hist_seqs[col] = seq
 
-        # 递归多步预测(t_sec 按 86400 回绕),步数按 horizon 动态生成
-        cur = list(base)
+        # 直接多步预测:一次前向得到 NUM_FORECAST_STEPS 步(避免递归平滑,保留波形)
         predictions = {col: [] for col in out_cols}
         # 步进 = 相邻预测点间隔(10min = 600s)
         step_min = Config.MLP_FORECAST_STEPS[0]
-        step_seconds = step_min * 60
         if horizon_minutes is None:
             horizon_minutes = Config.MLP_DEFAULT_HORIZON
         num_steps = max(1, horizon_minutes // step_min)
         steps = [step_min * i for i in range(1, num_steps + 1)]
-        for step in steps:
-            t_sec_next = (cur[0] + step_seconds) % 86400
-            feat = input_scaler.transform(np.array([cur], dtype=float))
-            out_norm = session.run(None, {input_name: feat.astype(np.float32)})[0]
-            out = output_scaler.inverse_transform(out_norm) if output_scaler else out_norm
-            pred_vals = out[0]
-            # 更新输入: 用预测值替换对应字段
-            cur = [t_sec_next] + list(pred_vals)
-            for i, col in enumerate(out_cols):
-                predictions[col].append(round(float(pred_vals[i]), 2))
+        # 用最后一条数据的时间构造特征(只需一次前向)
+        sin_t, cos_t = _encode_time_cyclic(t_sec_last)
+        feat = [sin_t, cos_t]
+        for col in out_cols:
+            feat.extend(_build_col_features(hist_seqs[col], len(hist_seqs[col]) - 1, col))
+        feat_arr = input_scaler.transform(np.array([feat], dtype=float))
+        out_norm = session.run(None, {input_name: feat_arr.astype(np.float32)})[0]
+        out = output_scaler.inverse_transform(out_norm) if output_scaler else out_norm
+        pred_all = out[0]  # shape = (NUM_FORECAST_STEPS * num_cols,)
+        # 拆分:每列的 NUM_FORECAST_STEPS 步,y 列顺序为 [col_0 的 6 步, col_1 的 6 步, ...]
+        for col_idx, col in enumerate(out_cols):
+            col_preds = pred_all[col_idx * NUM_FORECAST_STEPS : (col_idx + 1) * NUM_FORECAST_STEPS]
+            for step_idx in range(min(num_steps, NUM_FORECAST_STEPS)):
+                predictions[col].append(round(float(col_preds[step_idx]), 2))
+            # horizon > 60 时,超出 6 步的部分用最后一步值填充(保持连续)
+            for step_idx in range(NUM_FORECAST_STEPS, num_steps):
+                predictions[col].append(round(float(col_preds[-1]), 2))
 
         # 构造返回结果(每个 metric 一份 predicted_values + history_snapshot)
         result = {}

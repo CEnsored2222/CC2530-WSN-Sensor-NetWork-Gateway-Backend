@@ -30,7 +30,9 @@ const METRICS = [
 ]
 const MODELS = [
   { value: 'linear', label: 'LinearRegression', desc: '线性回归(基线)' },
-  { value: 'svr', label: 'SVR', desc: '支持向量回归 · RBF' },
+  { value: 'svr', label: 'SVR', desc: '支持向量回归 · 线性核' },
+  { value: 'knn', label: 'KNN', desc: 'K近邻 · 模式匹配(复现波动)' },
+  { value: 'rf', label: 'RandomForest', desc: '随机森林 · 非线性拟合' },
   { value: 'mlp_temp_hum', label: 'MLP 温湿度', desc: 'ONNX · 多输出(温度+湿度)' },
   { value: 'mlp_light', label: 'MLP 光照', desc: 'ONNX · 单输出(光照)' },
 ]
