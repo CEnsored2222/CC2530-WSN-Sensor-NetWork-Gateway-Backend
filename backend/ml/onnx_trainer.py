@@ -383,7 +383,8 @@ class ONNXTrainer:
         torch.onnx.export(model, dummy, onnx_tmp,
                           opset_version=Config.MLP_ONNX_OPSET_VERSION,
                           input_names=["input"],
-                          output_names=["output"])
+                          output_names=["output"],
+                          dynamo=False)
 
         # 步骤3: 校验 ONNX
         onnx.checker.check_model(onnx_tmp)

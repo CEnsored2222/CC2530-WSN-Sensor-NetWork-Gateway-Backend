@@ -1,0 +1,393 @@
+:root {
+  /* —— 字体族 —— */
+  --font-display: 'Syne', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-sans:    'IBM Plex Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono:    'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
+
+  /* —— 节奏 —— */
+  --radius: 4px;
+  --radius-lg: 10px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* —— 数据系列色(图表共用,在双主题下均可见) —— */
+  --series-temp:    #f5a35c;  /* amber */
+  --series-hum:     #4dd6c1;  /* cyan-mint */
+  --series-light:   #b58cf0;  /* violet   */
+}
+
+/* ============================================================
+   深空科技暗色(默认)
+   ============================================================ */
+:root,
+[data-theme='dark'] {
+  --paper:        #0b1020;   /* 主背景:深空藏青 */
+  --paper-deep:   #060912;   /* 更深 */
+  --surface:      #141b30;   /* 卡片底 */
+  --surface-soft: #1a2238;
+  --surface-hi:   #1f2a44;   /* 浮起态 */
+
+  --ink:          #e9eef9;
+  --ink-2:        #b6c0d8;
+  --ink-3:        #8993b1;
+  --ink-4:        #5c6685;
+  --ink-5:        #3a4566;
+
+  --line:         #232c46;
+  --line-strong:  #34405e;
+
+  --sage:         #4dd6c1;   /* 主强调:信号青 */
+  --sage-deep:    #6fe6d4;
+  --sage-soft:    rgba(77, 214, 193, 0.14);
+  --sage-tint:    rgba(77, 214, 193, 0.06);
+
+  --amber:        #f5a35c;
+  --terra:        #ef6b7e;
+  --amber-soft:   rgba(245, 163, 92, 0.16);
+
+  /* 用于全局氛围背景 */
+  --glow-1: rgba(77, 214, 193, 0.10);
+  --glow-2: rgba(181, 140, 240, 0.08);
+  --grid-line: rgba(255, 255, 255, 0.025);
+}
+
+/* ============================================================
+   亮色模式
+   ============================================================ */
+[data-theme='light'] {
+  --paper:        #f4f7fc;
+  --paper-deep:   #e8edf5;
+  --surface:      #ffffff;
+  --surface-soft: #f7faff;
+  --surface-hi:   #ffffff;
+
+  --ink:          #0c1426;
+  --ink-2:        #3d4860;
+  --ink-3:        #6a7591;
+  --ink-4:        #9aa3ba;
+  --ink-5:        #c4ccdc;
+
+  --line:         #dde3ee;
+  --line-strong:  #c4ccdc;
+
+  --sage:         #0f9b87;
+  --sage-deep:    #087a6a;
+  --sage-soft:    rgba(15, 155, 135, 0.12);
+  --sage-tint:    rgba(15, 155, 135, 0.05);
+
+  --amber:        #d97706;
+  --terra:        #dc2626;
+  --amber-soft:   rgba(217, 119, 6, 0.12);
+
+  --glow-1: rgba(15, 155, 135, 0.06);
+  --glow-2: rgba(181, 140, 240, 0.05);
+  --grid-line: rgba(0, 0, 0, 0.025);
+}
+
+/* —— 基础 —— */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.5s var(--ease), color 0.5s var(--ease);
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* 深空氛围背景:径向辉光 + 网格 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(900px 600px at 8% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(700px 500px at 95% 110%, var(--glow-2), transparent 60%);
+  transition: opacity 0.5s var(--ease);
+}
+
+/* 微型栅格纹理 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 50% 50%, #000 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 50%, #000 30%, transparent 80%);
+}
+
+#app { position: relative; z-index: 1; }
+
+a { color: var(--sage); text-decoration: none; }
+a:hover { color: var(--sage-deep); }
+
+/* —— 排版辅助 —— */
+.display { font-family: var(--font-display); letter-spacing: -0.02em; }
+.mono    { font-family: var(--font-mono); }
+.muted   { color: var(--ink-3); }
+.label-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+/* —— 入场动画 —— */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.rise {
+  animation: rise 0.55s var(--ease) both;
+}
+.rise-1 { animation-delay: 0.05s; }
+.rise-2 { animation-delay: 0.12s; }
+.rise-3 { animation-delay: 0.20s; }
+.rise-4 { animation-delay: 0.28s; }
+.rise-5 { animation-delay: 0.36s; }
+.rise-6 { animation-delay: 0.44s; }
+
+/* 滚动条:全局隐藏(仍可滚动,仅去掉可见指示器) */
+* {
+  scrollbar-width: none;           /* Firefox */
+  -ms-overflow-style: none;        /* IE/Edge */
+}
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;                   /* Chrome/Safari/Edge */
+}
+
+/* ============================================================
+   Element Plus 覆写
+   ============================================================ */
+.el-button {
+  --el-button-bg-color: var(--surface-hi);
+  --el-button-border-color: var(--line-strong);
+  --el-button-hover-bg-color: var(--sage-soft);
+  --el-button-hover-border-color: var(--sage);
+  --el-button-hover-text-color: var(--sage);
+  --el-button-text-color: var(--ink-2);
+  --el-button-active-bg-color: var(--sage);
+  --el-button-active-text-color: #fff;
+  border-radius: var(--radius);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  height: 36px;
+  padding: 0 18px;
+  transition: all 0.22s var(--ease);
+}
+.el-button--primary {
+  --el-button-bg-color: var(--sage);
+  --el-button-border-color: var(--sage);
+  --el-button-text-color: #06141a;
+  --el-button-hover-bg-color: var(--sage-deep);
+  --el-button-hover-border-color: var(--sage-deep);
+  --el-button-hover-text-color: #06141a;
+  --el-button-active-bg-color: var(--sage-deep);
+  --el-button-active-text-color: #06141a;
+  font-weight: 600;
+}
+
+.el-input__wrapper,
+.el-textarea__inner {
+  background: var(--surface) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 0 0 1px var(--line-strong) inset !important;
+  transition: box-shadow 0.22s var(--ease);
+  padding: 4px 14px;
+}
+.el-input__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--sage) inset !important;
+}
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--sage) inset, 0 0 0 3px var(--sage-soft) inset !important;
+}
+.el-input__inner { color: var(--ink) !important; }
+.el-input__inner::placeholder { color: var(--ink-4) !important; }
+
+.el-select__wrapper {
+  background: var(--surface) !important;
+  box-shadow: 0 0 0 1px var(--line-strong) inset !important;
+  border-radius: var(--radius) !important;
+}
+.el-select__wrapper.is-hovering { box-shadow: 0 0 0 1px var(--sage) inset !important; }
+.el-select__wrapper.is-focused { box-shadow: 0 0 0 1px var(--sage) inset, 0 0 0 3px var(--sage-soft) inset !important; }
+
+.el-popper {
+  background: var(--surface-hi) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius) !important;
+}
+.el-select-dropdown__item {
+  color: var(--ink-2) !important;
+}
+.el-select-dropdown__item.is-hovering,
+.el-select-dropdown__item.is-selected {
+  background: var(--sage-soft) !important;
+  color: var(--sage) !important;
+}
+.el-popper__arrow::before { background: var(--surface-hi) !important; border-color: var(--line-strong) !important; }
+
+.el-date-editor.el-input__wrapper,
+.el-date-editor .el-range-input {
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+}
+.el-date-editor .el-range-input::placeholder { color: var(--ink-4) !important; }
+.el-picker-panel {
+  background: var(--surface-hi) !important;
+  border: 1px solid var(--line-strong) !important;
+  color: var(--ink) !important;
+}
+.el-picker-panel__content .el-date-table th,
+.el-picker-panel__content .el-time-table th { color: var(--ink-3) !important; }
+.el-date-table td.in-range .el-range-segment,
+.el-date-table td.in-range { background: var(--sage-soft) !important; }
+
+.el-drawer {
+  background: var(--surface) !important;
+  border-left: 1px solid var(--line-strong) !important;
+  color: var(--ink) !important;
+}
+
+.el-dialog {
+  background: var(--surface-hi) !important;
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--line-strong) !important;
+}
+.el-dialog__title { color: var(--ink) !important; }
+
+.el-message-box {
+  background: var(--surface-hi) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius-lg) !important;
+}
+.el-message-box__title { color: var(--ink) !important; }
+.el-message-box__content { color: var(--ink-2) !important; }
+
+.el-message {
+  background: var(--surface-hi) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius) !important;
+  color: var(--ink) !important;
+}
+
+.el-loading-mask { background: rgba(11, 16, 32, 0.6) !important; }
+[data-theme='light'] .el-loading-mask { background: rgba(244, 247, 252, 0.6) !important; }
+.el-loading-spinner .path { stroke: var(--sage) !important; }
+
+.el-empty__description p { color: var(--ink-3) !important; }
+
+.el-switch__core {
+  background-color: var(--line-strong) !important;
+  border-color: var(--line-strong) !important;
+}
+.el-switch.is-checked .el-switch__core {
+  background-color: var(--sage) !important;
+  border-color: var(--sage) !important;
+}
+
+.el-table {
+  background: transparent !important;
+  color: var(--ink-2) !important;
+}
+.el-table th.el-table__cell {
+  background: transparent !important;
+  color: var(--ink-4) !important;
+  border-bottom: 1px solid var(--line-strong) !important;
+}
+.el-table td.el-table__cell { border-bottom: 1px solid var(--line) !important; }
+.el-table tr:hover > td { background: var(--surface-soft) !important; }
+
+.el-pagination .btn-prev,
+.el-pagination .btn-next,
+.el-pagination .el-pager li {
+  background: var(--surface) !important;
+  color: var(--ink-2) !important;
+}
+.el-pagination .el-pager li.is-active {
+  background: var(--sage) !important;
+  color: #06141a !important;
+}
+
+/* ============================================================
+   el-tree 主题覆写(全局,适用于 teleported dialog 内的树)
+   ============================================================ */
+.el-tree {
+  background: transparent !important;
+  --el-tree-node-hover-bg-color: var(--sage-tint);
+  --el-tree-text-color: var(--ink-2);
+  --el-tree-expand-icon-color: var(--ink-3);
+}
+.el-tree-node__content {
+  height: 34px;
+  border-radius: var(--radius);
+  transition: background 0.15s;
+  background: transparent;
+}
+.el-tree-node__content:hover {
+  background: var(--sage-tint);
+}
+.el-tree-node__content > .el-tree-node__expand-icon {
+  color: var(--ink-3);
+}
+.el-tree-node__content > .el-tree-node__expand-icon:hover {
+  color: var(--sage);
+}
+.el-tree-node__label {
+  font-size: 13px;
+  color: var(--ink-2);
+  letter-spacing: 0.01em;
+}
+.el-tree__empty-text {
+  color: var(--ink-4);
+  font-size: 12px;
+}
+/* checkbox:未选中态在深色背景下需提亮边框 */
+.el-tree .el-checkbox__inner {
+  background-color: var(--surface);
+  border-color: var(--line-strong);
+  border-radius: 3px;
+}
+.el-tree .el-checkbox__inner:hover {
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-checked .el-checkbox__inner {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-checked .el-checkbox__inner::after {
+  border-color: var(--paper-deep);
+}
+/* indeterminate 态(网关半选) */
+.el-tree .el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background-color: var(--sage);
+  border-color: var(--sage);
+}
+.el-tree .el-checkbox__input.is-indeterminate .el-checkbox__inner::before {
+  background-color: var(--paper-deep);
+}
+.el-tree .el-checkbox__label {
+  color: var(--ink-2);
+}
+
+/* el-dialog body 背景继承(避免某些 EP 版本默认白底) */
+.el-dialog__body,
+.el-dialog__header {
+  background: transparent;
+}
