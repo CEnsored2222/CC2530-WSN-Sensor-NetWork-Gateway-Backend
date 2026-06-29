@@ -13,11 +13,16 @@ import sys
 def get_writable_dir() -> str:
     """获取可写目录路径。
 
-    - 开发环境 (python gui.py)：返回脚本所在目录
-    - exe 环境 (PyInstaller 打包后)：返回 exe 所在目录
+    - 开发环境 (python gui_web.py)：返回脚本所在目录
+    - exe 环境 (PyInstaller 打包后)：返回 %APPDATA%/WSN-Gateway/
+      (用户数据目录, EXE 同目录保持干净, 避免旧 gw_uuid.txt/gateway.ini 残留
+      导致 UUID 不匹配而审批不通过)
     """
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+        app_data = os.environ.get('APPDATA') or os.path.expanduser('~')
+        data_dir = os.path.join(app_data, 'WSN-Gateway')
+        os.makedirs(data_dir, exist_ok=True)
+        return data_dir
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -93,6 +98,7 @@ class Config:
         if path is None:
             path = os.path.join(get_writable_dir(), "gateway.ini")
         cp = configparser.ConfigParser()
+        cp.optionxform = str  # 保持键名大小写,避免 EMQX_HOST 被写成 emqx_host
         cp.add_section("mqtt")
         for k in ["EMQX_HOST", "EMQX_PORT", "EMQX_USERNAME", "EMQX_PASSWORD", "EMQX_KEEPALIVE"]:
             cp.set("mqtt", k, str(self._values[k]))

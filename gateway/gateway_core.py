@@ -62,7 +62,14 @@ class GatewayCore:
         log(f"[Gateway] EMQX = {config.EMQX_HOST}:{config.EMQX_PORT}")
 
         # 串口（外部传入则使用，否则自动打开）
-        self._serial_port = serial_port if serial_port is not None else open_serial()
+        # _owns_serial 标记所有权:GUI 传入的串口由 GUI 管理生命周期,
+        # stop() 不关闭它;CLI 模式自己打开的串口由 stop() 关闭。
+        if serial_port is not None:
+            self._serial_port = serial_port
+            self._owns_serial = False
+        else:
+            self._serial_port = open_serial()
+            self._owns_serial = True
         self._serial_writer = SerialWriter(serial_port=self._serial_port)
 
         # 业务状态
@@ -133,7 +140,13 @@ class GatewayCore:
 
         self._mqtt.loop_start()
         self._mqtt.publish_register()
-        log("[Gateway] 网关运行中,等待后端审批...")
+        # 审批状态保留:网关重启后若审批仍有效,直接恢复业务转发
+        # 审批状态只由后端 revoked 消息撤销
+        if gateway_state.approved and not self._business_started.is_set():
+            self._start_business()
+            log("[Gateway] 审批状态仍有效,直接恢复业务数据转发", "SUCCESS")
+        else:
+            log("[Gateway] 网关运行中,等待后端审批...")
 
     # ---------- Phase 3→4: 审批回调 ----------
     def _start_business(self):
@@ -155,9 +168,12 @@ class GatewayCore:
         self._heartbeat_thread.start()
 
     def _stop_business(self):
-        """审批撤销：停止所有业务线程。"""
+        """停止所有业务线程(网关停止或审批撤销时调用)。
+
+        注意:不清除 gateway_state.approved。审批状态只由后端 approved/revoked
+        消息控制,网关启停不应影响审批状态。这样重启网关后无需后端重新审批。
+        """
         self._business_started.clear()
-        gateway_state.set_approved(False)
         try:
             self._serial_reader.stop()
         except Exception as e:
@@ -203,11 +219,17 @@ class GatewayCore:
 
     # ---------- Phase 5: 关机 ----------
     def stop(self):
-        """优雅停止所有线程。"""
+        """优雅停止所有线程。
+
+        串口关闭策略:
+        - CLI 模式(_owns_serial=True):stop() 关闭自己打开的串口
+        - GUI 模式(_owns_serial=False):串口由 GUI 管理生命周期,stop() 不关闭,
+          停止网关后串口保持打开,用户可直接重新启动网关
+        """
         self._stop_event.set()
         self._stop_business()
 
-        if self._serial_port is not None:
+        if self._owns_serial and self._serial_port is not None:
             try:
                 self._serial_port.close()
             except Exception:

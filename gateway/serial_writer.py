@@ -28,12 +28,16 @@ class SerialWriter:
             log(f"[SerialWriter] 串口未就绪,丢弃: {text}", "WARN")
             return
         with self._lock:
-            self._serial.write(data)
-            if hasattr(self._serial, "flush"):
-                try:
-                    self._serial.flush()
-                except Exception:
-                    pass
+            try:
+                self._serial.write(data)
+                if hasattr(self._serial, "flush"):
+                    try:
+                        self._serial.flush()
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"[SerialWriter] 串口写入失败,丢弃: {text} err={e}", "ERROR")
+                return
         log(f"[SerialWriter] 下发: {text}")
 
     def write_led(self, mac: str, value):
@@ -44,9 +48,12 @@ class SerialWriter:
 
     def handle_cmd(self, dev_mac: str, cmd: str, value):
         """MQTT cmd 主题的统一处理回调。"""
-        if cmd == "LED":
-            self.write_led(dev_mac, value)
-        elif cmd == "STATUS":
-            self.write_status(dev_mac, value)
-        else:
-            log(f"[SerialWriter] 未知指令 cmd={cmd}", "WARN")
+        try:
+            if cmd == "LED":
+                self.write_led(dev_mac, value)
+            elif cmd == "STATUS":
+                self.write_status(dev_mac, value)
+            else:
+                log(f"[SerialWriter] 未知指令 cmd={cmd}", "WARN")
+        except Exception as e:
+            log(f"[SerialWriter] 指令处理异常 dev={dev_mac} cmd={cmd} value={value} err={e}", "ERROR")
