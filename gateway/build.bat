@@ -45,6 +45,6 @@ echo   Output: dist\WSN-Gateway.exe
 echo ========================================
 echo.
 echo Copy WSN-Gateway.exe to any folder and double-click to run.
-echo gw_uuid.txt and gateway.ini will be auto-generated next to the exe.
+echo gw_uuid.txt and gateway.ini will be auto-generated in %%APPDATA%%\WSN-Gateway\.
 echo.
 pause

@@ -974,10 +974,6 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="btn-row">
-                            <button class="btn btn-primary btn-block" id="openSerialBtn">● 打开串口</button>
-                            <button class="btn btn-danger btn-block" id="closeSerialBtn" disabled>○ 关闭串口</button>
-                        </div>
                         <div class="status-indicator" style="margin-top: 8px;">
                             <span class="status-dot disconnected" id="serialDot"></span>
                             <span class="status-text" id="serialStatus">未连接</span>
@@ -1161,37 +1157,31 @@
     }
 
     // ==================== UI State ====================
+    // 串口与网关同步:启动网关=打开串口,停止网关=关闭串口。
+    // UI 只有两态:网关运行中(配置锁定) / 网关已停止(配置可改)。
     function updateUIState() {
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const openBtn = document.getElementById('openSerialBtn');
-        const closeBtn = document.getElementById('closeSerialBtn');
         const refreshBtn = document.getElementById('refreshBtn');
         const mqttIds = ['mqttHost', 'mqttPort'];
         const saveBtn = document.getElementById('saveBtn');
 
         if (gatewayRunning) {
-            // 网关运行中：MQTT 设置禁用，但串口可随时开关
+            // 网关运行中:串口已同步打开,所有配置锁定
             startBtn.disabled = true;
             stopBtn.disabled = false;
             mqttIds.forEach(id => document.getElementById(id).disabled = true);
             saveBtn.disabled = true;
-            // 串口开闭按钮互斥（网关运行中也可操作）
-            openBtn.disabled = serialOpen;
-            closeBtn.disabled = !serialOpen;
-            // 端口/波特率/刷新：串口打开时禁用（需先关串口才能换端口）
-            portDropdown.disable(serialOpen);
-            baudDropdown.disable(serialOpen);
-            refreshBtn.disabled = serialOpen;
+            portDropdown.disable(true);
+            baudDropdown.disable(true);
+            refreshBtn.disabled = true;
         } else {
-            // 网关已停止：端口/波特率/刷新始终可用
-            startBtn.disabled = false;
+            // 网关已停止:串口已同步关闭,所有配置可改
             stopBtn.disabled = true;
+            startBtn.disabled = false;
             portDropdown.disable(false);
             baudDropdown.disable(false);
             refreshBtn.disabled = false;
-            openBtn.disabled = serialOpen;
-            closeBtn.disabled = !serialOpen;
             mqttIds.forEach(id => document.getElementById(id).disabled = false);
             saveBtn.disabled = false;
         }
@@ -1236,6 +1226,8 @@
     }
 
     // ==================== Serial ====================
+    // 串口操作已与网关同步:start_gateway/stop_gateway 自动开关串口。
+    // 此处仅保留端口扫描,供下拉选择。
     async function refreshPorts(configData) {
         const ports = await callApi('get_serial_ports');
         if (ports && ports.length > 0) {
@@ -1247,38 +1239,6 @@
             }
         } else {
             portDropdown.setItems([{value: '', label: '(未检测到串口)'}]);
-        }
-    }
-
-    async function openSerial() {
-        const port = portDropdown.getValue();
-        const baud = parseInt(baudDropdown.getValue());
-
-        if (!port || port.startsWith('(未检测到')) {
-            showToast('error', '未检测到可用串口。\n请连接设备后点击 ↻ 刷新。');
-            return;
-        }
-
-        const result = await callApi('open_serial', port, baud);
-        if (result && result.success) {
-            serialOpen = true;
-            updateUIState();
-            updateSerialStatus(true, port + '@' + baud);
-            updateConnStatus(true, port + '@' + baud);
-            updateStatusBar('串口: ' + port + '@' + baud);
-        } else {
-            showToast('error', result ? result.message : '串口打开失败');
-        }
-    }
-
-    async function closeSerial() {
-        const result = await callApi('close_serial');
-        if (result && result.success) {
-            serialOpen = false;
-            updateUIState();
-            updateSerialStatus(false, '');
-            updateConnStatus(false, '');
-            updateStatusBar('串口已断开');
         }
     }
 
@@ -1299,10 +1259,16 @@
     }
 
     // ==================== Gateway ====================
+    // 串口与网关同步:start_gateway 自动打开串口,stop_gateway 自动关闭串口。
     async function startGateway() {
         const host = document.getElementById('mqttHost').value.trim();
         if (!host) {
             showToast('error', '请输入 MQTT Broker 地址');
+            return;
+        }
+        const port = portDropdown.getValue();
+        if (!port || port.startsWith('(未检测到')) {
+            showToast('error', '未检测到可用串口。\n请连接设备后点击 ↻ 刷新。');
             return;
         }
 
@@ -1310,8 +1276,14 @@
         const result = await callApi('start_gateway');
         if (result && result.success) {
             gatewayRunning = true;
+            serialOpen = true;
             document.getElementById('uuidInput').value = result.uuid;
             updateUIState();
+            // 串口状态同步显示
+            const port2 = portDropdown.getValue();
+            const baud2 = baudDropdown.getValue();
+            updateSerialStatus(true, port2 + '@' + baud2);
+            updateConnStatus(true, port2 + '@' + baud2);
             updateStatusBar('运行中 | UUID: ' + result.uuid.substring(0, 8) + '...');
         } else {
             showToast('error', result ? result.message : '网关启动失败');
@@ -1322,10 +1294,13 @@
         const result = await callApi('stop_gateway');
         if (result && result.success) {
             gatewayRunning = false;
+            serialOpen = false;
             document.getElementById('uuidInput').value = '—';
             updateUIState();
-            document.getElementById('approvalDot').className = 'status-dot waiting';
-            document.getElementById('approvalText').textContent = '等待审批';
+            // 串口状态同步显示
+            updateSerialStatus(false, '');
+            updateConnStatus(false, '');
+            // 不重置审批状态 UI:审批状态由后端控制,重启网关后保持
             document.getElementById('deviceCount').textContent = '设备: —';
             updateStatusBar('已停止');
         }
@@ -1432,8 +1407,6 @@
         // Bind events
         document.getElementById('themeToggle').addEventListener('click', toggleTheme);
         document.getElementById('refreshBtn').addEventListener('click', () => refreshPorts(null));
-        document.getElementById('openSerialBtn').addEventListener('click', openSerial);
-        document.getElementById('closeSerialBtn').addEventListener('click', closeSerial);
         document.getElementById('saveBtn').addEventListener('click', saveConfig);
         document.getElementById('startBtn').addEventListener('click', startGateway);
         document.getElementById('stopBtn').addEventListener('click', stopGateway);

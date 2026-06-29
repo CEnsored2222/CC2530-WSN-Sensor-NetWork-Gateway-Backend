@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """串口读取器:从串口读取报文,解析后转发到 MQTT。
 
-串口对象需提供阻塞式 readline() -> bytes 接口(pyserial.Serial 满足)。"""
+串口对象需提供 read_until(terminator) -> bytes 接口(pyserial.Serial 满足)。
+CC2530 报文以 } 结尾且无 \\n,使用 read_until(b'}') + buffer 累积跨包报文。"""
 import threading
 import time
 
@@ -56,10 +57,24 @@ class SerialReader:
             self.start()
 
     def _loop(self):
+        # CC2530 报文格式为 {key=val, ..., MAC=...},无 \n 终止符。
+        # 使用 read_until(b'}') 读取到 } 为止,并用 buffer 累积跨包报文。
+        buffer = ""
         while self._running:
+            # 串口被外部关闭(close_serial / update_serial)则静默退出,
+            # 避免抛出 PortNotOpenError("Attempting to use a port that is not open")
+            if self._serial is None:
+                break
+            if hasattr(self._serial, "is_open") and not self._serial.is_open:
+                break
             try:
-                raw = self._serial.readline()
+                raw = self._serial.read_until(b'}')
             except Exception as e:
+                msg = str(e).lower()
+                # 串口被关闭时 pyserial 抛出 PortNotOpenError,属于正常切换流程
+                if "not open" in msg or "closed" in msg:
+                    log("[SerialReader] 串口已关闭,停止读取线程", "INFO")
+                    break
                 log(f"[SerialReader] 读取异常: {e}", "ERROR")
                 time.sleep(1)
                 continue
@@ -67,31 +82,54 @@ class SerialReader:
             if not raw:
                 continue
             try:
-                line = raw.decode("utf-8", errors="ignore").strip()
+                chunk = raw.decode("utf-8", errors="ignore")
             except Exception:
                 continue
-            if not line:
+            if not chunk:
                 continue
 
-            log(f"[SerialReader] 收到报文: {line}")
-            kind, data = parse_packet(line)
-            if kind is None:
-                log(f"[SerialReader] 报文解析失败(忽略): {line}", "WARN")
+            buffer += chunk
+            # 防止异常设备导致 buffer 无限增长
+            if len(buffer) > 1024:
+                log(f"[SerialReader] buffer 溢出({len(buffer)}B),清空: {buffer[:80]!r}", "WARN")
+                buffer = ""
                 continue
 
-            # 待审隔离:审批通过前不发布业务数据
-            if not gateway_state.approved:
-                continue
+            # 循环提取所有完整的 {...} 报文
+            while True:
+                start = buffer.find('{')
+                if start < 0:
+                    buffer = ""
+                    break
+                end = buffer.find('}', start)
+                if end < 0:
+                    # 还没读到 },保留 { 之后的内容等下次拼接
+                    buffer = buffer[start:]
+                    break
+                line = buffer[start:end + 1].strip()
+                buffer = buffer[end + 1:]
+                if not line:
+                    continue
 
-            try:
-                if kind == "reg":
-                    self._handle_reg(data)
-                elif kind == "data":
-                    self._handle_data(data)
-                elif kind == "feedback":
-                    self._handle_feedback(data)
-            except Exception as e:
-                log(f"[SerialReader] 处理报文异常 kind={kind} err={e}", "ERROR")
+                log(f"[SerialReader] 收到报文: {line}")
+                kind, data = parse_packet(line)
+                if kind is None:
+                    log(f"[SerialReader] 报文解析失败(忽略): {line}", "WARN")
+                    continue
+
+                # 待审隔离:审批通过前不发布业务数据
+                if not gateway_state.approved:
+                    continue
+
+                try:
+                    if kind == "reg":
+                        self._handle_reg(data)
+                    elif kind == "data":
+                        self._handle_data(data)
+                    elif kind == "feedback":
+                        self._handle_feedback(data)
+                except Exception as e:
+                    log(f"[SerialReader] 处理报文异常 kind={kind} err={e}", "ERROR")
 
     def _on_new_mac(self, mac: str):
         """新 MAC 出现时发布设备发现与活跃状态。"""

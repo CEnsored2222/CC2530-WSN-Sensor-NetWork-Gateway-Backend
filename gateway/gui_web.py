@@ -91,13 +91,23 @@ class GatewayApi:
             log("[GUI] 未检测到可用串口", "WARN")
         return detected
 
-    def open_serial(self, port, baudrate):
-        """打开串口。"""
-        if not port or port.startswith("(未检测到"):
-            return {"success": False, "message": "未检测到可用串口"}
+    def _open_serial_internal(self, port, baudrate):
+        """内部方法:打开串口并保存引用。仅在 start_gateway 内部调用。
 
-        config.set_config_value("SERIAL_PORT", port)
-        config.set_config_value("SERIAL_BAUDRATE", baudrate)
+        串口生命周期完全绑定到网关:启动网关=打开串口,停止网关=关闭串口。
+        避免双端串口管理冲突(PortNotOpenError)。
+        """
+        if not port or port.startswith("(未检测到"):
+            return {"success": False, "message": "未检测到可用串口,请连接设备后刷新列表"}
+
+        # 防御性关闭已持有的串口(理论上 start_gateway 前应为 None)
+        if self._serial_port_obj is not None:
+            try:
+                self._serial_port_obj.close()
+            except Exception:
+                pass
+            self._serial_port_obj = None
+            self._serial_open = False
 
         try:
             import serial as pyserial
@@ -105,13 +115,6 @@ class GatewayApi:
             sp = pyserial.Serial(port, baudrate, timeout=1)
             self._serial_open = True
             self._serial_port_obj = sp
-            if self._core:
-                self._core._serial_port = sp
-                self._core._serial_writer.update_serial(sp)
-                self._core._serial_reader.update_serial(sp)
-                # 网关已审批则重启串口监听
-                if gateway_state.approved and not self._core._serial_reader._running:
-                    self._core._serial_reader.start()
             log(f"[GUI] 串口 {port}@{baudrate} 已打开", "SUCCESS")
             return {"success": True}
         except Exception as e:
@@ -123,41 +126,70 @@ class GatewayApi:
                 }
             return {"success": False, "message": f"串口打开失败: {detail}"}
 
-    def close_serial(self):
-        """关闭串口。"""
-        if self._core and self._serial_open:
-            self._core.close_serial()
-        if self._serial_port_obj:
+    def _close_serial_internal(self):
+        """内部方法:关闭 GUI 持有的串口。仅在 stop_gateway 内部调用。"""
+        if self._serial_port_obj is not None:
             try:
                 self._serial_port_obj.close()
             except Exception:
                 pass
-        self._serial_open = False
-        self._serial_port_obj = None
-        log("[GUI] 串口已关闭", "INFO")
-        return {"success": True}
+            self._serial_port_obj = None
+            self._serial_open = False
+            log("[GUI] 串口已关闭", "INFO")
 
-    # ==================== 网关启停 ====================
+    # ==================== 网关启停（与串口同步） ====================
 
     def start_gateway(self):
-        """启动网关核心。"""
+        """启动网关核心。串口生命周期与网关绑定:启动网关=打开串口。
+
+        前置条件:已配置 SERIAL_PORT 和 EMQX_HOST。
+        执行顺序:
+          1. 校验配置
+          2. 打开串口(_open_serial_internal)
+          3. 创建 GatewayCore 并传入已打开的串口(_owns_serial=False)
+          4. 启动网关(连接 MQTT + 发布注册 + 等待审批)
+        审批通过后,SerialReader 自动 start() 并开始读取数据。
+        """
         host = config.EMQX_HOST
         if not host:
             return {"success": False, "message": "请输入 MQTT Broker 地址"}
 
-        sp = self._serial_port_obj if self._serial_open else None
+        port = config.SERIAL_PORT
+        baudrate = config.SERIAL_BAUDRATE
+        if not port:
+            return {"success": False, "message": "请先选择串口端口"}
+
+        # 1. 打开串口
+        result = self._open_serial_internal(port, baudrate)
+        if not result["success"]:
+            return result
+
+        # 2. 创建并启动 GatewayCore,复用 GUI 打开的串口
+        sp = self._serial_port_obj
         self._core = GatewayCore(serial_port=sp)
         self._core.start()
         self._gateway_running = True
-        log("[GUI] 网关已启动", "SUCCESS")
+        log("[GUI] 网关已启动(串口已同步打开)", "SUCCESS")
         return {"success": True, "uuid": self._core.gw_uuid}
 
     def stop_gateway(self):
-        """停止网关核心。"""
+        """停止网关核心。串口生命周期与网关绑定:停止网关=关闭串口。
+
+        执行顺序:
+          1. 停止 GatewayCore(stop() 会停止 reader/mqtt/heartbeat,
+             _owns_serial=False 时 stop() 不关闭串口,由本方法显式关闭)
+          2. 关闭串口(_close_serial_internal)
+          3. 清理状态
+        注意:不清除 gateway_state.approved,审批状态由后端控制,
+        网关启停不应影响审批状态,重启后直接恢复业务转发。
+        """
         if self._core:
             self._core.stop()
+            self._core = None
         self._gateway_running = False
-        log("[GUI] 网关已停止", "INFO")
+        # 关闭串口(与 start_gateway 对称)
+        self._close_serial_internal()
+        log("[GUI] 网关已停止(串口已同步关闭)", "INFO")
         return {"success": True}
 
     # ==================== 状态轮询 ====================
@@ -204,14 +236,33 @@ class GatewayApi:
 
     def close_window(self):
         """关闭窗口（由 JS 端确认后调用）。"""
-        if self._core:
-            self._core.stop()
+        self._cleanup()
         self._window.destroy()
 
     def on_closing(self):
-        """Alt+F4 等系统关闭事件：直接停止网关并退出。"""
+        """Alt+F4 等系统关闭事件：清理资源后退出。"""
+        self._cleanup()
+
+    def _cleanup(self):
+        """清理所有资源:停止网关线程 + 关闭串口。
+
+        窗口关闭时必须显式关闭串口,否则 Python 进程退出前串口句柄可能残留,
+        导致下次启动 EXE 时报"串口被占用"。
+        """
         if self._core:
-            self._core.stop()
+            try:
+                self._core.stop()
+            except Exception:
+                pass
+            self._core = None
+        if self._serial_port_obj is not None:
+            try:
+                self._serial_port_obj.close()
+            except Exception:
+                pass
+            self._serial_port_obj = None
+            self._serial_open = False
+        self._gateway_running = False
 
 
 def main():
