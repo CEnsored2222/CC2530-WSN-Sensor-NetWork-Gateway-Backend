@@ -1,0 +1,14 @@
+# Yolo 视觉推理服务依赖
+# Python >= 3.9
+# 注意:PyTorch 请按 CUDA 版本从 https://pytorch.org 安装,此处不固定版本
+# 例如: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+flask>=3.0
+flask-cors>=4.0.0
+ultralytics>=8.3.0
+insightface>=0.7.3
+onnxruntime>=1.17.0
+opencv-python>=4.9.0
+numpy>=1.24.0
+requests>=2.31.0
+Pillow>=10.0.0

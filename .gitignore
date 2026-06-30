@@ -87,3 +87,6 @@ gateway/*.spec
 *.tmp
 *.bak
 *.swp
+
+# YOLO model weights
+*.pt

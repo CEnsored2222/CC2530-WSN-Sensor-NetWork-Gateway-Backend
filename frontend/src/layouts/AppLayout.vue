@@ -10,6 +10,7 @@ import {
   DataAnalysis,
   Connection,
   Document,
+  Camera,
   Fold,
   Close,
   Operation,
@@ -29,6 +30,7 @@ import DevicesView from '@/views/Devices.vue'
 import HistoryView from '@/views/History.vue'
 import AlertsView from '@/views/Alerts.vue'
 import PredictionView from '@/views/Prediction.vue'
+import VisionView from '@/views/Vision.vue'
 import SubscriptionView from '@/views/admin/Subscription.vue'
 import LogsView from '@/views/admin/Logs.vue'
 
@@ -45,6 +47,7 @@ const ICON_MAP = {
   history:      markRaw(TrendCharts),
   alerts:       markRaw(Bell),
   prediction:   markRaw(DataAnalysis),
+  vision:       markRaw(Camera),
   subscription: markRaw(Connection),
   logs:         markRaw(Document)
 }
@@ -55,6 +58,7 @@ const VIEW_MAP = {
   history:      markRaw(HistoryView),
   alerts:       markRaw(AlertsView),
   prediction:   markRaw(PredictionView),
+  vision:       markRaw(VisionView),
   subscription: markRaw(SubscriptionView),
   logs:         markRaw(LogsView)
 }
@@ -65,11 +69,12 @@ const navItems = computed(() => {
     { idx: '02', label: '设备管理', name: 'devices' },
     { idx: '03', label: '历史曲线', name: 'history' },
     { idx: '04', label: '预警中心', name: 'alerts' },
-    { idx: '05', label: '智能预测', name: 'prediction' }
+    { idx: '05', label: '智能预测', name: 'prediction' },
+    { idx: '06', label: '视觉检测', name: 'vision' }
   ]
   if (userStore.isAdmin) {
-    base.push({ idx: '06', label: '订阅管理', name: 'subscription' })
-    base.push({ idx: '07', label: '日志管理', name: 'logs' })
+    base.push({ idx: '07', label: '订阅管理', name: 'subscription' })
+    base.push({ idx: '08', label: '日志管理', name: 'logs' })
   }
   return base
 })

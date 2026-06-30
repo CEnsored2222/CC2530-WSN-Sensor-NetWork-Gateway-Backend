@@ -223,3 +223,22 @@ CREATE TABLE IF NOT EXISTS ml_evaluations (
     PRIMARY KEY (id),
     INDEX idx_model_time (model_type, eval_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- 13. face_library  人脸库表(视觉模块)
+--    见 Yolo视觉模块设计文档.md 第 5.2 节
+--    embedding 存 insightface 512 维 float32 二进制序列化
+--    sample_snapshot 存注册样张 base64(便于前端 <img :src> 直接展示)
+-- ============================================
+CREATE TABLE IF NOT EXISTS face_library (
+    id              BIGINT          NOT NULL AUTO_INCREMENT,
+    user_id         BIGINT          NOT NULL,
+    name            VARCHAR(64)     NOT NULL,
+    embedding       LONGBLOB        NOT NULL COMMENT 'insightface 512 维特征向量(序列化)',
+    sample_snapshot LONGTEXT        NULL COMMENT '注册样张 base64',
+    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_user_name (user_id, name),
+    KEY idx_user (user_id),
+    CONSTRAINT fk_face_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
