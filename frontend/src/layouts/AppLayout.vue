@@ -14,6 +14,8 @@ import {
   Close,
   Operation,
   Switch,
+  Moon,
+  Sunny,
   SwitchButton as IconLogout
 } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
@@ -105,15 +107,33 @@ async function logout() {
 }
 
 /* ============================================================
-   侧边栏宽度缩放(会话内,不持久化)
+   侧边栏宽度缩放 + 收起展开(会话内持久化)
    ============================================================ */
-const sidebarWidth = ref(248)
 const SIDEBAR_MIN = 212
 const SIDEBAR_MAX = 380
+const SIDEBAR_COLLAPSED = 72
+const sidebarWidth = ref(248)
+const expandWidth = ref(248)
+const isCollapsed = ref(localStorage.getItem('atmos_sidebar_collapsed') === 'true')
 const resizingSidebar = ref(false)
+
+const effectiveSidebarWidth = computed(() =>
+  isCollapsed.value ? SIDEBAR_COLLAPSED : sidebarWidth.value
+)
+
+function toggleSidebar() {
+  isCollapsed.value = !isCollapsed.value
+  localStorage.setItem('atmos_sidebar_collapsed', String(isCollapsed.value))
+  if (!isCollapsed.value) {
+    sidebarWidth.value = Math.max(SIDEBAR_MIN, expandWidth.value)
+  } else {
+    expandWidth.value = sidebarWidth.value
+  }
+}
 
 function onSidebarResizeStart(e) {
   e.preventDefault()
+  if (isCollapsed.value) return
   resizingSidebar.value = true
   const startX = e.clientX
   const startW = sidebarWidth.value
@@ -121,8 +141,18 @@ function onSidebarResizeStart(e) {
   document.body.style.userSelect = 'none'
   function onMove(ev) {
     const dx = ev.clientX - startX
-    const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + dx))
+    let w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + dx))
+    if (w < SIDEBAR_MIN + 34) {
+      // 拖到阈值附近自动收起
+      w = SIDEBAR_COLLAPSED
+      isCollapsed.value = true
+      localStorage.setItem('atmos_sidebar_collapsed', 'true')
+    } else if (isCollapsed.value) {
+      isCollapsed.value = false
+      localStorage.setItem('atmos_sidebar_collapsed', 'false')
+    }
     sidebarWidth.value = w
+    if (!isCollapsed.value) expandWidth.value = w
   }
   function onUp() {
     resizingSidebar.value = false
@@ -233,13 +263,24 @@ function onSplitDividerDown(e) {
 <template>
   <div
     class="shell"
-    :class="{ 'is-resizing': resizingSidebar || resizingSplit }"
-    :style="{ gridTemplateColumns: sidebarWidth + 'px 1fr' }"
+    :class="{
+      'is-resizing': resizingSidebar || resizingSplit,
+      'is-collapsed': isCollapsed
+    }"
+    :style="{ gridTemplateColumns: effectiveSidebarWidth + 'px 1fr' }"
   >
     <!-- 侧边栏 -->
-    <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
+    <aside
+      class="sidebar"
+      :class="{ 'is-collapsed': isCollapsed }"
+      :style="{ width: effectiveSidebarWidth + 'px' }"
+    >
       <div class="brand">
-        <span class="brand-mark">
+        <span
+          class="brand-mark"
+          :title="isCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          @click="toggleSidebar"
+        >
           <span class="brand-mark-core"></span>
           <span class="brand-mark-ring"></span>
         </span>
@@ -251,31 +292,38 @@ function onSplitDividerDown(e) {
 
       <div class="nav-section-label label-eyebrow">Navigation</div>
       <nav class="nav">
-        <RouterLink
+        <el-tooltip
           v-for="item in navItems"
           :key="item.name"
-          :to="{ name: item.name }"
-          class="nav-item"
-          :class="{
-            active: route.name === item.name,
-            'is-primary-split': splitOpen && route.name === item.name,
-            'is-split-target': splitRoute === item.name
-          }"
-          draggable="true"
-          @dragstart="onNavDragStart($event, item.name)"
-          @dragend="onNavDragEnd"
-          :title="splitOpen && route.name === item.name ? '主面板' : (splitRoute === item.name ? '拆分面板中' : '拖到主区可拆分视图')"
+          :content="item.label"
+          placement="right"
+          :disabled="!isCollapsed"
+          :show-after="200"
         >
-          <span class="nav-icon">
-            <el-icon :size="16"><component :is="ICON_MAP[item.name]" /></el-icon>
-          </span>
-          <span class="nav-idx mono">{{ item.idx }}</span>
-          <span class="nav-label">{{ item.label }}</span>
-          <span class="nav-bar"></span>
-          <span class="nav-grip" aria-hidden="true">
-            <el-icon :size="11"><Operation /></el-icon>
-          </span>
-        </RouterLink>
+          <RouterLink
+            :to="{ name: item.name }"
+            class="nav-item"
+            :class="{
+              active: route.name === item.name,
+              'is-primary-split': splitOpen && route.name === item.name,
+              'is-split-target': splitRoute === item.name
+            }"
+            draggable="true"
+            @dragstart="onNavDragStart($event, item.name)"
+            @dragend="onNavDragEnd"
+            :title="splitOpen && route.name === item.name ? '主面板' : (splitRoute === item.name ? '拆分面板中' : '拖到主区可拆分视图')"
+          >
+            <span class="nav-icon">
+              <el-icon :size="16"><component :is="ICON_MAP[item.name]" /></el-icon>
+            </span>
+            <span class="nav-idx mono">{{ item.idx }}</span>
+            <span class="nav-label">{{ item.label }}</span>
+            <span class="nav-bar"></span>
+            <span class="nav-grip" aria-hidden="true">
+              <el-icon :size="11"><Operation /></el-icon>
+            </span>
+          </RouterLink>
+        </el-tooltip>
       </nav>
 
       <div class="side-foot">
@@ -286,17 +334,20 @@ function onSplitDividerDown(e) {
             <div class="user-role label-eyebrow">{{ userStore.role }}</div>
           </div>
         </div>
-        <button class="logout" @click="logout">
-          <el-icon :size="14"><IconLogout /></el-icon>
-          <span>退出登录</span>
-        </button>
+        <el-tooltip content="退出登录" placement="right" :disabled="!isCollapsed" :show-after="200">
+          <button class="logout" @click="logout">
+            <el-icon :size="14"><IconLogout /></el-icon>
+            <span>退出登录</span>
+          </button>
+        </el-tooltip>
       </div>
 
       <!-- 右边缘缩放手柄 -->
       <div
+        v-show="!isCollapsed"
         class="sidebar-resizer"
         @mousedown="onSidebarResizeStart"
-        @dblclick="sidebarWidth = 248"
+        @dblclick="sidebarWidth = 248; expandWidth = 248"
         title="拖动缩放侧边栏 · 双击复位"
       >
         <span class="resizer-grip"></span>
@@ -335,11 +386,14 @@ function onSplitDividerDown(e) {
           <button
             class="theme-toggle"
             :title="themeStore.theme === 'dark' ? '切换到亮色' : '切换到暗色'"
-            @click="themeStore.toggle()"
+            @click="themeStore.toggle($event)"
           >
             <span class="tt-track">
               <span class="tt-thumb" :class="{ right: themeStore.theme === 'light' }">
-                <span class="tt-ico">{{ themeStore.theme === 'dark' ? '☾' : '☀' }}</span>
+                <el-icon :size="12" class="tt-ico">
+                  <Moon v-if="themeStore.theme === 'dark'" />
+                  <Sunny v-else />
+                </el-icon>
               </span>
             </span>
           </button>
@@ -434,13 +488,94 @@ function onSplitDividerDown(e) {
    侧边栏
    ============================================================ */
 .sidebar {
+  transition: width 0.32s var(--ease), padding 0.32s var(--ease),
+              background-color 0.5s var(--ease), border-color 0.5s var(--ease);
+}
+.sidebar.is-collapsed {
+  padding: 22px 10px 16px;
+}
+.sidebar.is-collapsed .brand {
+  justify-content: center;
+  padding: 0 0 22px;
+  gap: 0;
+}
+.sidebar.is-collapsed .brand-text {
+  display: none;
+}
+.sidebar.is-collapsed .brand-mark {
+  margin: 0;
+}
+.sidebar.is-collapsed .nav-section-label {
+  display: none;
+}
+.sidebar.is-collapsed .nav {
+  align-items: center;
+}
+.sidebar.is-collapsed .nav > div {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.sidebar.is-collapsed .nav-item {
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.sidebar.is-collapsed .nav-idx,
+.sidebar.is-collapsed .nav-label,
+.sidebar.is-collapsed .nav-grip {
+  display: none;
+}
+.sidebar.is-collapsed .nav-bar {
+  left: auto;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px;
+  height: 18px;
+  border-radius: 3px 0 0 3px;
+}
+.sidebar.is-collapsed .nav-item.active .nav-bar {
+  transform: translateY(-50%) scaleY(1);
+}
+.sidebar.is-collapsed .side-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 14px;
+}
+.sidebar.is-collapsed .user-block {
+  justify-content: center;
+  margin-bottom: 10px;
+}
+.sidebar.is-collapsed .user-meta {
+  display: none;
+}
+.sidebar.is-collapsed .logout {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 10px;
+}
+.sidebar.is-collapsed .logout span {
+  display: none;
+}
+
+/* ============================================================
+   侧边栏(原有样式继续)
+   ============================================================ */
+.sidebar {
   background: var(--paper-deep);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   padding: 30px 22px 22px;
   position: relative;
-  transition: width 0.05s linear;
 }
 .sidebar::before {
   /* 左上角微辉光,呼应深空主题 */
@@ -450,6 +585,7 @@ function onSplitDividerDown(e) {
   height: 220px;
   background: radial-gradient(420px 220px at 0% 0%, var(--glow-1), transparent 70%);
   pointer-events: none;
+  transition: opacity 0.5s var(--ease);
 }
 .sidebar::after {
   content: '';
@@ -470,6 +606,7 @@ function onSplitDividerDown(e) {
   border-bottom: 1px solid var(--line);
   margin-bottom: 22px;
   position: relative;
+  transition: border-color 0.5s var(--ease);
 }
 .brand-mark {
   width: 34px;
@@ -478,6 +615,11 @@ function onSplitDividerDown(e) {
   flex-shrink: 0;
   display: grid;
   place-items: center;
+  cursor: pointer;
+  transition: transform 0.2s var(--ease);
+}
+.brand-mark:hover {
+  transform: scale(1.08);
 }
 .brand-mark-core {
   width: 14px;
@@ -539,12 +681,17 @@ function onSplitDividerDown(e) {
   display: flex;
   align-items: center;
   gap: 12px;
+  height: 46px;
   padding: 12px 14px;
   border-radius: var(--radius);
   color: var(--ink-3);
   transition: color 0.25s var(--ease), background 0.25s var(--ease), border-color 0.25s var(--ease);
   border: 1px solid transparent;
   cursor: grab;
+  overflow: hidden;
+}
+.nav-item + .nav-item {
+  border-top: 1px solid var(--line);
 }
 .nav-item:active {
   cursor: grabbing;
@@ -562,7 +709,7 @@ function onSplitDividerDown(e) {
   background: var(--surface);
   border: 1px solid var(--line);
   color: var(--ink-3);
-  transition: all 0.25s var(--ease);
+  transition: color 0.25s var(--ease), border-color 0.25s var(--ease), background 0.25s var(--ease), box-shadow 0.25s var(--ease);
   flex-shrink: 0;
 }
 .nav-item:hover .nav-icon,
@@ -645,6 +792,7 @@ function onSplitDividerDown(e) {
   border-top: 1px solid var(--line);
   padding-top: 18px;
   margin-top: 12px;
+  transition: border-color 0.5s var(--ease);
 }
 .user-block {
   display: flex;
@@ -763,6 +911,7 @@ function onSplitDividerDown(e) {
   -webkit-backdrop-filter: blur(12px) saturate(1.2);
   position: relative;
   z-index: 5;
+  transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease);
 }
 .topbar::after {
   /* 顶栏下方淡渐变线 */
@@ -789,6 +938,8 @@ function onSplitDividerDown(e) {
   background: var(--sage-soft);
   border: 1px solid var(--line-strong);
   box-shadow: 0 0 0 4px var(--sage-tint);
+  transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease),
+              color 0.5s var(--ease), box-shadow 0.5s var(--ease);
 }
 .page-eyebrow {
   font-size: 11px;
@@ -872,6 +1023,7 @@ function onSplitDividerDown(e) {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
+  transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease);
 }
 .ws-dot {
   width: 7px;
@@ -920,6 +1072,7 @@ function onSplitDividerDown(e) {
   border-left: 1px solid var(--line);
   background: color-mix(in srgb, var(--paper) 50%, var(--paper-deep));
   animation: pane-in 0.32s var(--ease) both;
+  transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease);
 }
 @keyframes pane-in {
   from { opacity: 0; transform: translateX(16px); }

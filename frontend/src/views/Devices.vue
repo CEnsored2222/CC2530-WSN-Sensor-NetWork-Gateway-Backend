@@ -2,7 +2,7 @@
 import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listGateways, listAllGateways, approve, reject, bindGateway, unbind } from '@/api/gateway'
+import { listGateways, listAllGateways, approve, reject, bindGateway, unbind, renameGateway } from '@/api/gateway'
 import { listDevices, bindDevice, deviceStream, sendCmd } from '@/api/device'
 import { getSocket } from '@/ws/socket'
 
@@ -108,6 +108,24 @@ async function doUnbind(gw) {
   })
 }
 
+async function renameGw(gw) {
+  const { value } = await ElMessageBox.prompt('请输入新的网关名称', '重命名网关', {
+    confirmButtonText: '确认',
+    cancelButtonText: '取消',
+    inputValue: gw.name || '',
+    inputPattern: /^.{0,40}$/,
+    inputErrorMessage: '名称长度不能超过 40 个字符',
+  }).catch(() => ({ value: null }))
+  if (value == null) return
+  try {
+    await renameGateway(gw.id, value.trim())
+    ElMessage.success('网关已重命名')
+    await loadGateways()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.error || '重命名失败')
+  }
+}
+
 function openName(dev) {
   nameDialog.did = dev.id
   nameDialog.name = dev.name || ''
@@ -140,6 +158,7 @@ async function openStream(dev) {
 
 // ============ 状态判断(与 Home.vue 保持一致)============
 const METRIC_LABELS = { temperature: '温度', humidity: '湿度', light: '光照' }
+const METRIC_COLORS = { temperature: '#f5a35c', humidity: '#4dd6c1', light: '#b58cf0' }
 function typeLabel(typeArr) {
   if (!Array.isArray(typeArr) || !typeArr.length) return null
   return typeArr.map((k) => METRIC_LABELS[k] || k).join('/')
@@ -310,7 +329,7 @@ onBeforeUnmount(() => {
           <div class="gw-id">
             <span class="gw-mark"></span>
             <div>
-              <div class="gw-name display">{{ gw.name || '未命名网关' }}</div>
+              <div class="gw-name display" title="点击重命名网关" @click="renameGw(gw)">{{ gw.name || '未命名网关' }}</div>
               <div class="gw-uuid mono">{{ gw.gw_uuid }}</div>
             </div>
           </div>
@@ -335,7 +354,15 @@ onBeforeUnmount(() => {
                 <span class="dc-name">{{ dev.name || dev.mac }}</span>
                 <span class="dc-bound" :class="{ bound: dev.bound }">{{ dev.bound ? '已绑定' : '未绑定' }}</span>
               </div>
-              <span class="dc-type label-eyebrow">{{ typeLabel(dev.type) || '未知' }}</span>
+              <span class="dc-types">
+                <span
+                  v-for="t in (dev.type || [])"
+                  :key="t"
+                  class="dc-type label-eyebrow"
+                  :style="{ '--type-color': METRIC_COLORS[t] || '#8993b1' }"
+                >{{ METRIC_LABELS[t] || t }}</span>
+                <span v-if="!(dev.type && dev.type.length)" class="dc-type label-eyebrow unknown">未知</span>
+              </span>
             </div>
             <div class="dc-mac mono">{{ dev.mac }}</div>
 
@@ -481,10 +508,14 @@ onBeforeUnmount(() => {
 /* 网关区 */
 .gw-section {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 2px solid #5a6f7a;
   border-radius: var(--radius-lg);
-  padding: 26px 28px;
+  padding: 25px 27px;
   margin-bottom: 20px;
+  transition: border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
+}
+.gw-section:hover {
+  box-shadow: 0 10px 28px rgba(90, 111, 122, 0.18);
 }
 .gw-head {
   display: flex;
@@ -505,7 +536,14 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 4px var(--sage-soft);
   flex-shrink: 0;
 }
-.gw-name { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
+.gw-name {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: color 0.2s var(--ease);
+}
+.gw-name:hover { color: var(--sage); }
 .gw-uuid { font-size: 10px; color: var(--ink-4); margin-top: 3px; letter-spacing: 0.03em; }
 .gw-meta { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .gw-pill { font-size: 12px; color: var(--ink-3); display: inline-flex; gap: 6px; align-items: baseline; }
@@ -549,7 +587,30 @@ onBeforeUnmount(() => {
   color: var(--ink-4);
 }
 .dc-bound.bound { background: var(--sage-soft); color: var(--sage-deep); }
-.dc-type { font-size: 9px; }
+.dc-types {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.dc-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  background: color-mix(in srgb, var(--type-color) 14%, transparent);
+  color: var(--type-color);
+  border: 1px solid color-mix(in srgb, var(--type-color) 30%, transparent);
+}
+.dc-type.unknown {
+  --type-color: var(--ink-4);
+}
 .dc-mac { font-size: 10px; color: var(--ink-4); margin: 6px 0 14px; letter-spacing: 0.04em; }
 .dc-actions { display: flex; gap: 8px; margin-bottom: 12px; }
 .dc-ctrl {

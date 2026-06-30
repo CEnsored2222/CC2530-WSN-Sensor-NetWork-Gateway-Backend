@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Search, Download } from '@element-plus/icons-vue'
 import { listGateways } from '@/api/gateway'
 import { listDevices } from '@/api/device'
 import { history } from '@/api/data'
@@ -163,8 +164,8 @@ onMounted(async () => {
           />
         </div>
         <div class="f-item f-actions">
-          <el-button type="primary" @click="query">查询</el-button>
-          <el-button @click="exportCsv" :disabled="!records.length">导出 CSV</el-button>
+          <el-button type="primary" :icon="Search" @click="query">查询</el-button>
+          <el-button :icon="Download" @click="exportCsv" :disabled="!records.length">导出 CSV</el-button>
         </div>
       </div>
     </section>

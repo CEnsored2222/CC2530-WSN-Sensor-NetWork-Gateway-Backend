@@ -243,21 +243,124 @@ a:hover { color: var(--sage-deep); }
 }
 .el-popper__arrow::before { background: var(--surface-hi) !important; border-color: var(--line-strong) !important; }
 
+/* —— 日期时间范围选择器:深/浅主题完整适配 —— */
 .el-date-editor.el-input__wrapper,
 .el-date-editor .el-range-input {
   background: var(--surface) !important;
   color: var(--ink) !important;
+  box-shadow: 0 0 0 1px var(--line-strong) inset !important;
 }
+.el-date-editor.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--sage) inset !important;
+}
+.el-date-editor.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--sage) inset, 0 0 0 3px var(--sage-soft) inset !important;
+}
+.el-date-editor .el-range-input { color: var(--ink) !important; }
 .el-date-editor .el-range-input::placeholder { color: var(--ink-4) !important; }
+.el-date-editor .el-range-separator { color: var(--ink-3) !important; }
+.el-date-editor .el-range__icon,
+.el-date-editor .el-input__prefix { color: var(--ink-3) !important; }
+
+/* 面板容器 */
 .el-picker-panel {
   background: var(--surface-hi) !important;
   border: 1px solid var(--line-strong) !important;
   color: var(--ink) !important;
 }
+.el-picker-panel__body,
+.el-picker-panel__sidebar { color: var(--ink-2) !important; }
+
+/* 顶部年/月导航 */
+.el-date-picker__header,
+.el-date-range-picker__header { color: var(--ink-2) !important; }
+.el-picker-panel__icon-btn { color: var(--ink-3) !important; }
+.el-picker-panel__icon-btn:hover { color: var(--sage) !important; }
+.el-date-picker__header-label,
+.el-date-range-picker__header-label { color: var(--ink-2) !important; }
+.el-date-picker__header-label:hover,
+.el-date-range-picker__header-label:hover { color: var(--sage) !important; }
+
+/* 日期表格 */
 .el-picker-panel__content .el-date-table th,
 .el-picker-panel__content .el-time-table th { color: var(--ink-3) !important; }
+.el-date-table td .el-date-table-cell__text { color: var(--ink-2) !important; }
+.el-date-table td.next-month .el-date-table-cell__text,
+.el-date-table td.prev-month .el-date-table-cell__text { color: var(--ink-5) !important; }
+.el-date-table td.available:hover .el-date-table-cell__text { color: var(--sage) !important; }
+.el-date-table td.today .el-date-table-cell__text {
+  color: var(--sage) !important;
+  font-weight: 600;
+}
+/* 范围选择:区间底色 + 起止端点(sage 填充,深色文字) */
 .el-date-table td.in-range .el-range-segment,
 .el-date-table td.in-range { background: var(--sage-soft) !important; }
+.el-date-table td.in-range:hover { background: color-mix(in srgb, var(--sage-soft) 70%, var(--sage-tint)) !important; }
+.el-date-table td.start-date .el-date-table-cell__text,
+.el-date-table td.end-date .el-date-table-cell__text,
+.el-date-table td.selected .el-date-table-cell__text {
+  background: var(--sage) !important;
+  color: #06141a !important;
+}
+.el-date-table td.disabled .el-date-table-cell__text { color: var(--ink-5) !important; }
+
+/* 时间面板(datetimerange 底部时/分/秒选择) */
+.el-time-panel {
+  background: var(--surface-hi) !important;
+  border: 1px solid var(--line-strong) !important;
+}
+.el-time-spinner__item { color: var(--ink-3) !important; }
+.el-time-spinner__item.is-active {
+  color: var(--sage) !important;
+  font-weight: 600;
+}
+.el-time-spinner__item:hover { color: var(--ink) !important; }
+
+/* 面板底部:Clear / 此刻 / 确认 */
+.el-picker-panel__footer {
+  background: var(--surface-hi) !important;
+  border-top: 1px solid var(--line) !important;
+}
+.el-picker-panel__link-btn {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--ink-2) !important;
+}
+.el-picker-panel__link-btn:hover:not(.is-disabled) {
+  color: var(--sage) !important;
+  background: var(--sage-soft) !important;
+}
+.el-picker-panel__link-btn.is-disabled {
+  color: var(--ink-5) !important;
+  background: transparent !important;
+}
+.el-picker-panel__link-btn.is-plain {
+  background: var(--surface) !important;
+  border-color: var(--line-strong) !important;
+}
+.el-picker-panel__link-btn.is-plain.is-disabled {
+  background: var(--surface-soft) !important;
+  border-color: var(--line) !important;
+}
+.el-time-panel__btn.confirm { color: var(--sage) !important; }
+.el-time-panel__btn.cancel { color: var(--ink-3) !important; }
+
+/* —— 主题切换:圆形展开过渡(View Transitions API,无支持则瞬时切换) ——
+   ::view-transition-new(root) 为切换后的快照,从点击点以圆形 clip 展开,覆盖旧快照 */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+  ::view-transition-new(root) {
+    animation: theme-reveal 0.6s var(--ease);
+  }
+  @keyframes theme-reveal {
+    from { clip-path: circle(0px at var(--theme-x, 50%) var(--theme-y, 0px)); }
+    to   { clip-path: circle(150% at var(--theme-x, 50%) var(--theme-y, 0px)); }
+  }
+}
 
 .el-drawer {
   background: var(--surface) !important;
@@ -390,4 +493,83 @@ a:hover { color: var(--sage-deep); }
 .el-dialog__body,
 .el-dialog__header {
   background: transparent;
+}
+
+/* ============================================================
+   主题切换平滑过渡
+   为依赖 CSS 变量的组件补齐 transition,与 body 保持一致的
+   0.5s 时长,避免不支持 View Transitions API 时画面撕裂。
+   已在复用 animate-all 的元素(如 .el-button)不重复声明。
+   ============================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  /* --- 表单控件 --- */
+  .el-input__wrapper,
+  .el-textarea__inner {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease),
+                box-shadow 0.22s var(--ease), border-color 0.5s var(--ease);
+  }
+  .el-select__wrapper {
+    transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease),
+                box-shadow 0.22s var(--ease);
+  }
+
+  /* --- 浮层 / 面板 --- */
+  .el-popper,
+  .el-picker-panel,
+  .el-time-panel,
+  .el-date-editor.el-input__wrapper {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease),
+                border-color 0.5s var(--ease);
+  }
+
+  /* --- 表格 --- */
+  .el-table {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease);
+  }
+  .el-table th.el-table__cell,
+  .el-table td.el-table__cell {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease),
+                border-color 0.5s var(--ease);
+  }
+
+  /* --- 对话框 / 消息 --- */
+  .el-dialog,
+  .el-message-box,
+  .el-message {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease),
+                border-color 0.5s var(--ease);
+  }
+
+  /* --- 树形控件 --- */
+  .el-tree,
+  .el-tree-node__content {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease);
+  }
+  .el-tree-node__content {
+    /* 保留原 hover 的短过渡 */
+    transition: background-color 0.15s var(--ease), color 0.5s var(--ease);
+  }
+
+  /* --- 分页器 --- */
+  .el-pagination .btn-prev,
+  .el-pagination .btn-next,
+  .el-pagination .el-pager li {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease),
+                border-color 0.5s var(--ease);
+  }
+
+  /* --- 开关 --- */
+  .el-switch__core {
+    transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease);
+  }
+
+  /* --- 空状态 --- */
+  .el-empty {
+    transition: background-color 0.5s var(--ease), color 0.5s var(--ease);
+  }
+
+  /* --- 树 checkbox --- */
+  .el-tree .el-checkbox__inner {
+    transition: background-color 0.5s var(--ease), border-color 0.5s var(--ease);
+  }
 }

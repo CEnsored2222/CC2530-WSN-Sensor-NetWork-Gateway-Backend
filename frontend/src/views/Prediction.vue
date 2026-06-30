@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Lightning, Tools, DataLine } from '@element-plus/icons-vue'
 import { listGateways } from '@/api/gateway'
 import { listDevices } from '@/api/device'
 import { runPrediction, latestPrediction, predictionHistory, mlpTrain, mlpFinetune, mlpEvaluate, mlpStatus } from '@/api/prediction'
@@ -395,9 +396,9 @@ onMounted(async () => {
         <div class="mlp-head-right">
           <span class="mlp-model-name">{{ modelMeta?.label }}</span>
           <div class="mlp-actions">
-            <el-button type="primary" @click="trainMLP" :loading="trainLoading">预训练</el-button>
-            <el-button :type="finetuneActive ? 'primary' : 'default'" @click="finetuneMLP">微调</el-button>
-            <el-button @click="evaluateMLP" :loading="evaluateLoading">评估</el-button>
+            <el-button type="primary" :icon="Lightning" @click="trainMLP" :loading="trainLoading">预训练</el-button>
+            <el-button :icon="Tools" :type="finetuneActive ? 'primary' : 'default'" @click="finetuneMLP">微调</el-button>
+            <el-button :icon="DataLine" @click="evaluateMLP" :loading="evaluateLoading">评估</el-button>
           </div>
         </div>
       </div>
@@ -442,7 +443,7 @@ onMounted(async () => {
         <div class="label-eyebrow">预测点数</div>
         <div class="sb-val mono">{{ Object.keys(currentPrediction.predicted_values || {}).length }}</div>
       </div>
-      <div class="sb-card" :title="scoreText(currentPrediction)">
+      <div class="sb-card score-card" :title="scoreText(currentPrediction)">
         <div class="label-eyebrow">评估</div>
         <div class="sb-val mono score" v-if="currentPrediction.mae != null">
           {{ scoreText(currentPrediction) }}
@@ -534,43 +535,75 @@ onMounted(async () => {
 <style scoped>
 .prediction { max-width: 1240px; }
 
+/* ===== 控制面板(顶部 sage 渐变强调条,与 Home.vue 的 stat-card 一致) ===== */
 .panel {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 26px 28px;
   margin-bottom: 24px;
+  overflow: hidden;
+}
+.panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 44px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--sage), var(--sage-deep));
 }
 .panel-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
   margin-bottom: 22px;
+  gap: 16px;
 }
 .panel-title { font-size: 22px; font-weight: 500; }
 .panel-sub { font-size: 12px; }
+
+/* 表单区:用低对比 inset 框出交互区,与标题分离 */
 .panel-form {
   display: grid;
   grid-template-columns: repeat(5, 1fr) auto;
   gap: 14px;
   align-items: end;
+  padding: 18px;
+  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
-.f-item { display: flex; flex-direction: column; gap: 6px; }
+.f-item { display: flex; flex-direction: column; gap: 8px; }
 .f-item label { font-size: 10px; letter-spacing: 0.08em; }
 .f-actions { display: flex; align-items: flex-end; }
 
+/* 运行按钮:呼吸点 + 主按钮 hover 辉光 */
 .run-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #fff;
-  margin-right: 6px;
+  margin-right: 8px;
   vertical-align: middle;
-  box-shadow: 0 0 6px rgba(255,255,255,0.8);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+  animation: run-pulse 1.8s ease-in-out infinite;
+}
+@keyframes run-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(255, 255, 255, 0.9); transform: scale(1); }
+  50%      { box-shadow: 0 0 12px rgba(255, 255, 255, 1); transform: scale(1.18); }
+}
+.f-actions .el-button--primary {
+  transition: box-shadow 0.3s var(--ease), transform 0.2s var(--ease);
+}
+.f-actions .el-button--primary:hover {
+  box-shadow: 0 0 22px var(--sage-soft);
+  transform: translateY(-1px);
 }
 
-/* 评估带 */
+/* ===== 评估带 ===== */
 .stat-band {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -578,16 +611,44 @@ onMounted(async () => {
   margin-bottom: 24px;
 }
 .sb-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 16px 18px;
+  overflow: hidden;
+  transition: transform 0.25s var(--ease), border-color 0.25s var(--ease);
+}
+.sb-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 24px;
+  height: 2px;
+  background: var(--sage);
+  opacity: 0.7;
+}
+.sb-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-strong);
+}
+/* 评估卡:sage 底色高亮,作为关键洞察 */
+.sb-card.score-card {
+  background: var(--sage-tint);
+  border-color: color-mix(in srgb, var(--sage) 32%, var(--line));
+}
+.sb-card.score-card::before {
+  background: var(--sage);
+  opacity: 1;
+  width: 34px;
 }
 .sb-val {
   font-size: 18px;
   font-weight: 500;
-  margin-top: 8px;
+  margin-top: 10px;
   color: var(--ink);
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -598,22 +659,36 @@ onMounted(async () => {
   margin-left: 4px;
   font-weight: 400;
 }
-.sb-val.score { font-size: 13px; color: var(--sage-deep); }
+.sb-val.score { font-size: 13px; color: var(--sage-deep); font-weight: 600; }
 .muted { color: var(--ink-4); }
 
-/* 图表卡 */
+/* ===== 预测曲线卡 ===== */
 .chart-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 22px 24px 12px;
   margin-bottom: 24px;
+  overflow: hidden;
+}
+.chart-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 44px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--sage), var(--sage-deep));
 }
 .chart-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  gap: 16px;
 }
 .chart-title {
   font-size: 18px;
@@ -622,17 +697,23 @@ onMounted(async () => {
 .chart-unit { font-size: 12px; margin-left: 6px; }
 .legend {
   display: flex;
-  gap: 14px;
+  gap: 8px;
 }
+/* 图例改为 pill 样式,与表单/按钮圆角语言统一 */
 .lg {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 11px;
   color: var(--ink-3);
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  letter-spacing: 0.02em;
 }
 .lg i {
-  width: 12px;
+  width: 14px;
   height: 2px;
   border-radius: 1px;
 }
@@ -645,19 +726,36 @@ onMounted(async () => {
   height: 320px;
 }
 
-/* 双列:预测点 + 历史 */
+/* ===== 双列:预测点表格 + 历史记录 ===== */
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 24px;
 }
 .forecast-table, .history-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 22px 24px;
+  overflow: hidden;
 }
-.card-head { margin-bottom: 14px; }
+.forecast-table::before,
+.history-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px;
+  height: 2px;
+  background: var(--sage);
+  opacity: 0.85;
+}
+.card-head {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
 
 /* 表格滚动容器(数据多时避免页面过长) */
 .table-wrap {
@@ -668,6 +766,7 @@ onMounted(async () => {
   position: sticky;
   top: 0;
   background: var(--surface);
+  z-index: 1;
 }
 
 table {
@@ -687,13 +786,19 @@ table th {
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+table tbody tr {
+  transition: background 0.15s var(--ease);
+}
+table tbody tr:hover {
+  background: var(--sage-tint);
+}
 table td.num {
   font-weight: 500;
   color: var(--ink);
 }
 table tr:last-child td { border-bottom: none; }
 
-/* 历史列表 */
+/* 历史列表:active/hover 时左侧出现 sage 强调条 */
 .hist-list {
   display: flex;
   flex-direction: column;
@@ -702,22 +807,39 @@ table tr:last-child td { border-bottom: none; }
   overflow-y: auto;
 }
 .hist-row {
+  position: relative;
   display: flex;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 12px 14px 12px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: transform 0.2s var(--ease), border-color 0.2s var(--ease), background 0.2s var(--ease);
+  overflow: hidden;
+}
+.hist-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 60%;
+  background: var(--sage);
+  border-radius: 1px;
+  transform: translateY(-50%) scaleY(0);
+  transition: transform 0.2s var(--ease);
 }
 .hist-row:hover {
-  border-color: var(--sage);
-  background: var(--sage-tint);
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+  transform: translateY(-1px);
 }
+.hist-row:hover::before { transform: translateY(-50%) scaleY(1); }
 .hist-row.active {
   border-color: var(--sage);
   background: var(--sage-tint);
 }
+.hist-row.active::before { transform: translateY(-50%) scaleY(1); }
 .hr-left, .hr-right {
   display: flex;
   flex-direction: column;
@@ -729,10 +851,10 @@ table tr:last-child td { border-bottom: none; }
   color: var(--ink);
 }
 .hr-time { font-size: 11px; }
-.hr-points { font-size: 13px; color: var(--sage-deep); }
+.hr-points { font-size: 13px; color: var(--sage-deep); font-weight: 500; }
 .hr-horizon { font-size: 11px; text-align: right; }
 
-/* MLP 模型管理面板 */
+/* ===== MLP 模型管理面板 ===== */
 .panel.rise-1b {
   margin-bottom: 24px;
   animation-delay: 0.08s;  /* 介于 .rise-1(0.05s) 与 .rise-2(0.12s) 之间 */
@@ -753,50 +875,89 @@ table tr:last-child td { border-bottom: none; }
   justify-content: flex-end;
   margin-left: auto;
 }
+/* 模型名做成 pill,与图例/状态语言一致 */
 .mlp-model-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--ink);
   white-space: nowrap;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
 }
 .mlp-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
-/* 4 参数卡片填满内容区宽度(4 列 → 缩小时 2 列) */
+/* 4 参数卡片填满内容区宽度(4 列 → 缩小时 2 列)
+   每张卡顶部用不同色强调条区分维度 */
 .mlp-status-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
 .ms-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 16px 18px;
+  overflow: hidden;
+  transition: transform 0.25s var(--ease), border-color 0.25s var(--ease);
+}
+.ms-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 26px;
+  height: 2px;
+  opacity: 0.9;
+}
+.ms-card:nth-child(1)::before { background: var(--sage); }
+.ms-card:nth-child(2)::before { background: var(--amber); }
+.ms-card:nth-child(3)::before { background: var(--series-light); }
+.ms-card:nth-child(4)::before { background: var(--ink-3); }
+.ms-card:nth-child(5)::before { background: var(--sage-deep); }
+.ms-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-strong);
 }
 .ms-card .mono {
   font-size: 18px;
   font-weight: 500;
-  margin-top: 8px;
+  margin-top: 10px;
   color: var(--ink);
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mlp-status-empty {
-  padding: 12px 16px;
-  border: 1px dashed var(--line);
+  padding: 18px 20px;
+  border: 1px dashed var(--line-strong);
   border-radius: var(--radius);
   font-size: 12px;
   color: var(--ink-4);
+  text-align: center;
+  background: var(--sage-tint);
 }
 
+/* ===== 响应式:1100px 折半,640px 单列 ===== */
 @media (max-width: 1100px) {
   .panel-form { grid-template-columns: repeat(2, 1fr); }
   .stat-band { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
   .mlp-status-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .panel { padding: 20px 18px; }
+  .panel-form { grid-template-columns: 1fr; }
+  .stat-band { grid-template-columns: 1fr; }
+  .mlp-status-grid { grid-template-columns: 1fr; }
+  .chart-head { flex-direction: column; align-items: flex-start; }
+  .chart-box { height: 260px; }
 }
 </style>
