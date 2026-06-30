@@ -17,6 +17,7 @@ const routes = [
       { path: 'history', name: 'history', component: () => import('@/views/History.vue') },
       { path: 'alerts', name: 'alerts', component: () => import('@/views/Alerts.vue') },
       { path: 'prediction', name: 'prediction', component: () => import('@/views/Prediction.vue') },
+      { path: 'vision', name: 'vision', component: () => import('@/views/Vision.vue') },
       {
         path: 'admin/subscription',
         name: 'subscription',

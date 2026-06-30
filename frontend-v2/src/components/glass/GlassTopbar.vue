@@ -16,7 +16,7 @@ const userMenuOpen = ref(false)
 
 const pageTitle = computed(() => ({
   home: '总览', devices: '设备', history: '历史',
-  alerts: '告警', prediction: '预测',
+  alerts: '告警', prediction: '预测', vision: '视觉',
   subscription: '订阅', logs: '日志', login: 'Atmos'
 }[route.name] || 'Atmos'))
 

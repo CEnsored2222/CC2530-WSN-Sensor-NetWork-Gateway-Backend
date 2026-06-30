@@ -18,6 +18,7 @@ const routes = [
       { path: 'history', name: 'history', component: () => import('@/views/History.vue'), meta: { transition: 'route' } },
       { path: 'alerts', name: 'alerts', component: () => import('@/views/Alerts.vue'), meta: { transition: 'route' } },
       { path: 'prediction', name: 'prediction', component: () => import('@/views/Prediction.vue'), meta: { transition: 'route' } },
+      { path: 'vision', name: 'vision', component: () => import('@/views/Vision.vue'), meta: { transition: 'route' } },
       {
         path: 'admin/subscription',
         name: 'subscription',

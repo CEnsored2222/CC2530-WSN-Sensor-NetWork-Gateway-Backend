@@ -13,6 +13,7 @@ from extensions import db
 from models.alert_rule import AlertRule, METRICS, OPERATORS, LOGICS, SEVERITIES
 from models.alert_rule_target import AlertRuleTarget
 from models.gateway import Gateway
+from models.user_gateway import UserGateway
 from models.device import Device
 from models.operation_log import OperationLog
 from models.user import User
@@ -111,8 +112,8 @@ def _validate_and_sync_targets(user_id, rule, targets):
 
     返回 (targets_list, error_msg)。targets_list 为标准化后的列表。
     """
-    # 取用户拥有的网关 {id: gateway},以及网关下的设备
-    user_gws = Gateway.query.filter_by(user_id=user_id).all()
+    # 取用户绑定的网关 {id: gateway},以及网关下的设备
+    user_gws = [ug.gateway for ug in UserGateway.query.filter_by(user_id=user_id).all() if ug.gateway]
     user_gw_ids = {gw.id for gw in user_gws}
     if not user_gws:
         # 用户没有任何网关,规则无法绑定设备(将不触发任何设备)

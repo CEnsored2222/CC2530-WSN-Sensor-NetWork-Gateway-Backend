@@ -8,6 +8,7 @@ from models.sensor_data import SensorData
 from models.subscription import Subscription
 from models.operation_log import OperationLog
 from models.ml import MlModel, MlEvaluation
+from models.vision import FaceLibrary
 
 __all__ = ["User", "Gateway", "UserGateway", "Device", "SensorData", "Subscription",
-           "OperationLog", "MlModel", "MlEvaluation"]
+           "OperationLog", "MlModel", "MlEvaluation", "FaceLibrary"]

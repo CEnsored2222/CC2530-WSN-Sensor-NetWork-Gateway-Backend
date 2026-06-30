@@ -33,7 +33,7 @@ def create_app():
     socketio.init_app(app, cors_allowed_origins="*", async_mode="threading")
 
     # 注册蓝图
-    from api import auth, gateway, device, data, subscription, operation_log, alert, prediction
+    from api import auth, gateway, device, data, subscription, operation_log, alert, prediction, vision
     app.register_blueprint(auth.bp, url_prefix="/api/auth")
     app.register_blueprint(gateway.bp, url_prefix="/api")
     app.register_blueprint(device.bp, url_prefix="/api")
@@ -42,6 +42,7 @@ def create_app():
     app.register_blueprint(operation_log.bp, url_prefix="/api")
     app.register_blueprint(alert.bp, url_prefix="/api")
     app.register_blueprint(prediction.bp, url_prefix="/api")
+    app.register_blueprint(vision.bp, url_prefix="/api")
 
     # ----- 新增: MLP 蓝图注册(延迟导入 + 容错)-----
     try:

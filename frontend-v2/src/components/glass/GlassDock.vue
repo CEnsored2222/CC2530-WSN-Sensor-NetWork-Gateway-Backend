@@ -13,7 +13,8 @@ const navItems = computed(() => {
     { name: 'devices', label: '设备', icon: 'devices', path: '/devices' },
     { name: 'history', label: '历史', icon: 'history', path: '/history' },
     { name: 'alerts', label: '告警', icon: 'bell', path: '/alerts' },
-    { name: 'prediction', label: '预测', icon: 'chart', path: '/prediction' }
+    { name: 'prediction', label: '预测', icon: 'chart', path: '/prediction' },
+    { name: 'vision', label: '视觉', icon: 'eye', path: '/vision' }
   ]
   if (userStore.isAdmin) {
     items.push({ name: 'subscription', label: '订阅', icon: 'subscription', path: '/admin/subscription' })

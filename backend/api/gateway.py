@@ -168,6 +168,36 @@ def reject(gw_uuid):
     return jsonify({"ok": True})
 
 
+@bp.patch("/gateways/<int:gid>")
+@jwt_required
+def rename_gateway(gid):
+    """重命名当前用户绑定的网关(修改 user_gateways 中间表的 name)。"""
+    gw = db.session.get(Gateway, gid)
+    if not gw:
+        return jsonify({"error": "网关不存在"}), 404
+
+    ug = UserGateway.query.filter_by(
+        user_id=g.current_user.id, gateway_id=gid
+    ).first()
+    if not ug:
+        return jsonify({"error": "您未绑定此网关"}), 404
+
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    old_name = ug.name
+    ug.name = name if name else gw.hostname
+    db.session.commit()
+
+    db.session.add(OperationLog(
+        user_id=g.current_user.id, action="rename_gateway",
+        target_type="gateway", target_id=gw.id,
+        detail=json.dumps({"gw_uuid": gw.gw_uuid, "old_name": old_name, "new_name": ug.name}, ensure_ascii=False),
+        ip=_IP(),
+    ))
+    db.session.commit()
+    return jsonify({"ok": True, "name": ug.name})
+
+
 @bp.delete("/gateways/<int:gid>")
 @jwt_required
 def unbind(gid):

@@ -11,7 +11,7 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
         "DATABASE_URL",
-        "mysql+pymysql://root:1234@101.132.119.124:3306/smart_home?charset=utf8mb4",
+        "mysql+pymysql://root:1234@127.0.0.1:3306/smart_home?charset=utf8mb4",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -64,3 +64,9 @@ class Config:
     MLP_SCHEDULER_CHECK_INTERVAL = 60    # 调度器检查间隔
     MLP_MODELS_DIR = "ml/models"  # 模型文件根目录(相对于 backend 运行目录)
     MLP_ONNX_OPSET_VERSION = 14          # ONNX 导出 opset 版本
+
+    # ============ 视觉模块 ============
+    # 本地 Yolo 服务公网地址(下发给前端直连,见设计文档第 6.5 节)
+    YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://127.0.0.1:6001")
+    # Yolo↔后端内部通信共享密钥(两端必须一致)
+    VISION_INTERNAL_TOKEN = os.getenv("VISION_INTERNAL_TOKEN", "zheshiyigetoken")

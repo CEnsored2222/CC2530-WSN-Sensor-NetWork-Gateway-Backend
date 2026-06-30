@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { getSocket } from '@/ws/socket'
 import { realtime, overview } from '@/api/data'
 import LineChart from '@/components/charts/LineChart.vue'
+import { OfficeBuilding, Cpu, Link, VideoPlay } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
@@ -288,22 +289,30 @@ onBeforeUnmount(() => {
     <!-- 顶部统计带 -->
     <section class="stat-band">
       <div class="stat-card rise rise-1">
-        <div class="stat-label label-eyebrow">网关</div>
+        <div class="stat-label label-eyebrow">
+          <el-icon :size="12"><OfficeBuilding /></el-icon> 网关
+        </div>
         <div class="stat-num display">{{ overviewData.gateway_count }}</div>
         <div class="stat-foot muted">已绑定</div>
       </div>
       <div class="stat-card rise rise-2">
-        <div class="stat-label label-eyebrow">设备总数</div>
+        <div class="stat-label label-eyebrow">
+          <el-icon :size="12"><Cpu /></el-icon> 设备总数
+        </div>
         <div class="stat-num display">{{ overviewData.device_count }}</div>
         <div class="stat-foot muted">个节点</div>
       </div>
       <div class="stat-card rise rise-3">
-        <div class="stat-label label-eyebrow">已绑定</div>
+        <div class="stat-label label-eyebrow">
+          <el-icon :size="12"><Link /></el-icon> 已绑定
+        </div>
         <div class="stat-num display">{{ overviewData.bound_device_count }}</div>
         <div class="stat-foot muted">监控中</div>
       </div>
       <div class="stat-card live rise rise-4">
-        <div class="stat-label label-eyebrow">实时通道</div>
+        <div class="stat-label label-eyebrow">
+          <el-icon :size="12"><VideoPlay /></el-icon> 实时通道
+        </div>
         <div class="stat-num display"><span class="live-dot dot-live"></span>WS</div>
         <div class="stat-foot muted">推送中</div>
       </div>
@@ -452,7 +461,15 @@ onBeforeUnmount(() => {
   padding: 22px 24px;
   position: relative;
   overflow: hidden;
+  transition: border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
 }
+.stat-card:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.stat-card:nth-child(1) { border-color: #2a8bb5; }
+.stat-card:nth-child(2) { border-color: #7ab84a; }
+.stat-card:nth-child(3) { border-color: #c25a73; }
+.stat-card:nth-child(4) { border-color: #d48943; }
 .stat-card::before {
   content: '';
   position: absolute;
@@ -462,9 +479,19 @@ onBeforeUnmount(() => {
   height: 2px;
   background: var(--sage);
 }
+.stat-card:nth-child(1)::before { background: #1c6e91; }
+.stat-card:nth-child(2)::before { background: #5a8b35; }
+.stat-card:nth-child(3)::before { background: #7a2b3d; }
+.stat-card:nth-child(4)::before { background: #98602a; }
 .stat-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--ink-4);
   font-size: 10px;
+}
+.stat-label .el-icon {
+  color: var(--sage);
 }
 .stat-num {
   font-size: 44px;

@@ -9,8 +9,20 @@ export const useThemeStore = defineStore('theme', () => {
     document.documentElement.setAttribute('data-theme', t)
   }
 
-  function toggle() {
-    theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  function toggle(event) {
+    // 主题切换:优先用 View Transitions API 做圆形展开过渡,无支持时直接切换
+    const setTheme = () => {
+      theme.value = theme.value === 'dark' ? 'light' : 'dark'
+    }
+    if (typeof document !== 'undefined' && document.startViewTransition) {
+      const x = event?.clientX ?? window.innerWidth / 2
+      const y = event?.clientY ?? 0
+      document.documentElement.style.setProperty('--theme-x', x + 'px')
+      document.documentElement.style.setProperty('--theme-y', y + 'px')
+      document.startViewTransition(() => setTheme())
+    } else {
+      setTheme()
+    }
   }
 
   watch(theme, (t) => {

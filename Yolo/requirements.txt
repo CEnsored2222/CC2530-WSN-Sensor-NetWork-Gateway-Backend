@@ -1,0 +1,22 @@
+# Yolo 视觉推理服务依赖
+# Python >= 3.9
+#
+# GPU 加速(本机配置):
+#   1. PyTorch 按 CUDA 版本从 https://pytorch.org 安装,例如:
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   2. onnxruntime-gpu 版本需与 torch 的 CUDA 版本匹配:
+#      torch cu121 → onnxruntime-gpu==1.20.1(需要 cublasLt64_12.dll,由 torch/lib 提供)
+#      切勿使用 1.27+ (需要 CUDA 13 的 cublasLt64_13.dll,与 torch cu121 不兼容)
+#   3. app.py 启动时会自动将 torch/lib 加入 PATH,使 onnxruntime-gpu 能找到 cuBLAS/cuDNN
+#
+# CPU 部署(集显机器):将 onnxruntime-gpu 换成 onnxruntime 即可
+
+flask>=3.0
+flask-cors>=4.0.0
+ultralytics>=8.3.0
+insightface>=0.7.3
+onnxruntime-gpu>=1.20.0,<1.27.0
+opencv-python>=4.9.0
+numpy>=1.24.0
+requests>=2.31.0
+Pillow>=10.0.0

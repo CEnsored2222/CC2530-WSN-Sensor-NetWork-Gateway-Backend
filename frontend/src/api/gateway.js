@@ -9,3 +9,4 @@ export const bindGateway = (gwUuid, name) =>
   req.post(`/gateways/${gwUuid}/bind`, name ? { name } : {})
 export const reject = (gwUuid) => req.post(`/gateways/${gwUuid}/reject`)
 export const unbind = (gid) => req.delete(`/gateways/${gid}`)
+export const renameGateway = (gid, name) => req.patch(`/gateways/${gid}`, { name })
