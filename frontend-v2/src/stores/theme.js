@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
+/**
+ * 主题 Store
+ * 保留 toggle/apply/localStorage/theme-change 事件机制不变
+ * CSS 变量集通过 [data-theme] 属性选择器在 main.css 中定义
+ */
 export const useThemeStore = defineStore('theme', () => {
   const stored = typeof localStorage !== 'undefined' && localStorage.getItem('atmos_theme')
   const theme = ref(stored || 'dark') // 'dark' | 'light'

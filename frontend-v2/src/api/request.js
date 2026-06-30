@@ -1,6 +1,6 @@
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import { useUiStore } from '@/stores/ui'
 import router from '@/router'
 
 const request = axios.create({
@@ -28,7 +28,7 @@ request.interceptors.response.use(
         router.push({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } })
       }
     } else {
-      ElMessage.error(msg)
+      try { useUiStore().pushToast({ type: 'danger', title: '请求失败', message: msg }) } catch (e) {}
     }
     return Promise.reject(err)
   }

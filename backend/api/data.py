@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据接口:实时监控/历史曲线/总览统计"""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import extensions
 from flask import Blueprint, g, jsonify, request
@@ -8,6 +8,7 @@ from flask import Blueprint, g, jsonify, request
 from extensions import db
 from models.device import Device
 from models.gateway import Gateway
+from models.operation_log import OperationLog
 from models.sensor_data import SensorData
 from utils.auth import jwt_required
 from utils.gateway_permission import get_user_gateway_ids, check_user_bound_to_gateway
@@ -106,15 +107,24 @@ def history():
 @bp.get("/data/overview")
 @jwt_required
 def overview():
-    """总览统计:网关数/设备数/在线设备"""
+    """总览统计:网关数/设备数/在线设备/告警数"""
     gw_ids = get_user_gateway_ids(g.current_user.id)
     gws = [db.session.get(Gateway, gid) for gid in gw_ids]
     gws = [gw for gw in gws if gw is not None]
     devs = Device.query.filter(Device.gateway_id.in_(gw_ids)).all() if gw_ids else []
     bound = [d for d in devs if d.bound]
+    # 在线设备:最近 5 分钟有数据上报
+    online_threshold = datetime.now() - timedelta(minutes=5)
+    online = [d for d in bound if d.last_seen and d.last_seen >= online_threshold]
+    # 告警数:当前用户的告警记录总数
+    alert_count = OperationLog.query.filter_by(
+        user_id=g.current_user.id, action="alert"
+    ).count()
     return jsonify({
         "gateway_count": len(gws),
         "device_count": len(devs),
         "bound_device_count": len(bound),
+        "online_count": len(online),
+        "alert_count": alert_count,
         "gateways": [gw.to_dict() for gw in gws],
     })

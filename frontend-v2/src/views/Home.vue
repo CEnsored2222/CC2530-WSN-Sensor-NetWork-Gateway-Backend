@@ -1,46 +1,47 @@
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, shallowRef, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { getSocket } from '@/ws/socket'
 import { realtime, overview } from '@/api/data'
+import PageHeader from '@/components/layout/PageHeader.vue'
+import GlassStat from '@/components/layout/GlassStat.vue'
+import GlassCard from '@/components/glass/GlassCard.vue'
+import GlassEmpty from '@/components/glass/GlassEmpty.vue'
+import ScrollReveal from '@/components/vuebits/ScrollReveal.vue'
 import LineChart from '@/components/charts/LineChart.vue'
+import Icon from '@/components/icons/Icon.vue'
 
 const router = useRouter()
 
 const loading = ref(true)
-const overviewData = ref({ gateway_count: 0, device_count: 0, bound_device_count: 0 })
-const devices = ref([]) // [{device, latest}]
+const overviewData = ref({ gateway_count: 0, device_count: 0, bound_device_count: 0, online_count: 0, alert_count: 0 })
+const devices = ref([]) // [{ device, latest }]
 
-// 实时折线:BUG2 按设备分组,BUG3 双 Y 轴
-// 每个「设备 × 指标」一条独立 series,温/湿走左轴(0),光照走右轴(1)
-// 修复闪烁:用 time 轴 + 30 分钟时间窗口 + 增量更新
-const WINDOW_MS = 30 * 60 * 1000  // 30 分钟滚动窗口
+const statRefs = ref({})
+
+// 实时折线: 30 分钟滚动窗口, 双 Y 轴 (温湿左/光照右)
+const WINDOW_MS = 30 * 60 * 1000
 const chartSeries = shallowRef({ value: [] })
-// rt[key] = [[timestamp_ms, value], ...]  其中 key = `${deviceId}:${metric}`
-const rt = {}
-
-// 设备状态(device_status)由网关通过 status 主题统一上报,前端直接信任 sensor_data 推送:
-//   - 新 MAC 出现 → 网关发 active
-//   - 5s 内无新数据 → 网关发 sleep
-//   - STATUS 控制指令成功 → 网关发 active/sleep
-// 因此前端无需再做本地 1.5s 休眠检测。
+const rt = {} // key = `${deviceId}:${metric}` → [[ts_ms, value], ...]
+const hiddenSeries = ref(new Set())
+let raf = null
 
 const METRIC_META = {
-  temperature: { label: '温度', unit: '°C', color: '#f5a35c', yAxisIndex: 0 },
-  humidity:    { label: '湿度', unit: '%',  color: '#4dd6c1', yAxisIndex: 0 },
-  light:       { label: '光照', unit: 'lx', color: '#b58cf0', yAxisIndex: 1 }
+  temperature: { label: '温度', unit: '°C', color: '#f59e0b', icon: 'thermometer', yAxisIndex: 0, accent: 'amber' },
+  humidity:    { label: '湿度', unit: '%',   color: '#14b8a6', icon: 'droplet',    yAxisIndex: 0, accent: 'teal' },
+  light:       { label: '光照', unit: 'lux', color: '#a3e635', icon: 'sun',        yAxisIndex: 1, accent: 'sage' }
 }
 
-// 组合配色池:每个「设备×指标」组合独立配色,最大化区分度
-// 调色板在深/浅主题下均具可读性
+// 组合配色池:每个「设备×指标」组合分配独立颜色,最大化区分度
+// 调色板围绕 v2 绿色极光色系(青绿/薄荷/酸橙/琥珀)展开,深/浅主题下均可读
 const COMBO_COLORS = [
-  '#f5a35c', '#4dd6c1', '#b58cf0', '#7fa9ff', '#ff7a59',
-  '#9ad96a', '#e36b8b', '#5ad1d8', '#d6a04a', '#8fa3d1',
-  '#ffb84d', '#33c9b0', '#a06bff', '#5b9bff', '#ff8a7a',
-  '#85c95a', '#d4516f', '#3fb8c0', '#c9912e', '#7a8cb8'
+  '#84cc16', '#14b8a6', '#34d399', '#a3e635', '#fbbf24',
+  '#10b981', '#22d3ee', '#a7f3d0', '#65a30d', '#0d9488',
+  '#5eead4', '#bef264', '#facc15', '#06b6d4', '#15803d',
+  '#4ade80', '#2dd4bf', '#d9f99d', '#fde68a', '#99f6e4'
 ]
 
-// 组合颜色映射:key(`${devId}:${metric}`) -> color
+// 组合颜色映射: key(`${devId}:${metric}`) -> color
 const comboColorMap = ref({})
 let comboCursor = 0
 function comboColor(key) {
@@ -51,15 +52,152 @@ function comboColor(key) {
   return comboColorMap.value[key]
 }
 
-// 图例:按「设备 × 指标」组合显示
-// 名称格式:"设备名 · 指标" 例如 "Node-A · 温度"
-const hiddenSeries = ref(new Set()) // 存放被隐藏的 series name
-
 function seriesKey(deviceId, metric) {
   return `${deviceId}:${metric}`
 }
 function seriesName(deviceName, metric) {
-  return `${deviceName || '未知'} · ${METRIC_META[metric].label}`
+  return `${deviceName || '未知'} · ${METRIC_META[metric]?.label || metric}`
+}
+function isSeriesVisible(name) {
+  return !hiddenSeries.value.has(name)
+}
+
+// 设备/LED 状态判定(兼容字符串与数字)
+function isDeviceActive(s) { return s === 'active' || s === 1 || s === '1' }
+function isLedOn(s) { return s === true || s === 1 || s === '1' || s === 'true' }
+
+function parseDeviceType(t) {
+  if (!t) return ['temperature', 'humidity', 'light']
+  if (Array.isArray(t)) return t
+  try {
+    const arr = JSON.parse(t)
+    return Array.isArray(arr) ? arr : ['temperature', 'humidity', 'light']
+  } catch {
+    return ['temperature', 'humidity', 'light']
+  }
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const [ov, rtData] = await Promise.all([overview(), realtime()])
+    overviewData.value = {
+      gateway_count: ov.gateway_count ?? 0,
+      device_count: ov.device_count ?? 0,
+      bound_device_count: ov.bound_device_count ?? 0,
+      online_count: ov.online_count ?? ov.bound_device_count ?? 0,
+      alert_count: ov.alert_count ?? 0
+    }
+    const list = (rtData && rtData.devices) ? rtData.devices : (Array.isArray(rtData) ? rtData : [])
+    devices.value = list.map((d) => ({
+      device: d.device || d,
+      latest: d.latest || d.latest_data || null,
+      metrics: parseDeviceType((d.device || d).type)
+    }))
+    // 用 latest 预填 rt
+    devices.value.forEach((d) => {
+      if (!d.latest) return
+      const ts = (d.latest.ts || d.latest.timestamp) * 1000
+      d.metrics.forEach((m) => {
+        if (d.latest[m] == null) return
+        const key = `${d.device.id}:${m}`
+        rt[key] = [[ts, d.latest[m]]]
+      })
+    })
+    scheduleRebuild()
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    loading.value = false
+  }
+}
+
+function onSensorData(payload) {
+  if (!payload || !payload.device_id) return
+  const dev = devices.value.find((d) => d.device.id === payload.device_id)
+  const ts = (payload.ts || payload.timestamp || Math.floor(Date.now() / 1000)) * 1000
+  const metrics = dev ? dev.metrics : ['temperature', 'humidity', 'light']
+
+  // 即时更新卡片 latest (不节流)
+  if (dev) {
+    dev.latest = {
+      ts: ts / 1000,
+      temperature: payload.temperature ?? dev.latest?.temperature,
+      humidity: payload.humidity ?? dev.latest?.humidity,
+      light: payload.light ?? dev.latest?.light,
+      device_status: payload.device_status ?? dev.latest?.device_status,
+      led_status: payload.led_status ?? dev.latest?.led_status
+    }
+  }
+
+  // 推入 rt 并裁剪窗口
+  metrics.forEach((m) => {
+    if (payload[m] == null) return
+    const key = `${payload.device_id}:${m}`
+    if (!rt[key]) rt[key] = []
+    const arr = rt[key]
+    // 同毫秒去重
+    if (arr.length && arr[arr.length - 1][0] === ts) {
+      arr[arr.length - 1][1] = payload[m]
+    } else {
+      arr.push([ts, payload[m]])
+    }
+    // 裁剪窗口
+    const cutoff = ts - WINDOW_MS
+    while (arr.length && arr[0][0] < cutoff) arr.shift()
+  })
+
+  scheduleRebuild()
+}
+
+function onSubscriptionUpdated(payload) {
+  // 关闭的指标清空对应 rt
+  if (!payload || !Array.isArray(payload.enabled)) return
+  const enabled = new Set(payload.enabled)
+  Object.keys(rt).forEach((key) => {
+    const [, metric] = key.split(':')
+    if (!enabled.has(metric)) delete rt[key]
+  })
+  scheduleRebuild()
+}
+
+function scheduleRebuild() {
+  if (raf) return
+  raf = requestAnimationFrame(() => {
+    raf = null
+    rebuildSeries()
+  })
+}
+
+function rebuildSeries() {
+  const series = []
+  const cutoff = Date.now() - WINDOW_MS
+  devices.value.forEach((d) => {
+    d.metrics.forEach((m) => {
+      const key = `${d.device.id}:${m}`
+      const arr = (rt[key] || []).filter((p) => p[0] >= cutoff)
+      if (!arr.length) return
+      const meta = METRIC_META[m]
+      if (!meta) return
+      const name = seriesName(d.device.name || d.device.mac || d.device.id, m)
+      if (hiddenSeries.value.has(name)) return
+      series.push({
+        name,
+        data: arr,
+        color: comboColor(key),
+        yAxisIndex: meta.yAxisIndex
+      })
+    })
+  })
+  chartSeries.value = { value: series }
+}
+
+function toggleSeries(name) {
+  const s = new Set(hiddenSeries.value)
+  if (s.has(name)) s.delete(name)
+  else s.add(name)
+  hiddenSeries.value = s
+  scheduleRebuild()
 }
 
 // 图例:两级结构
@@ -69,15 +207,15 @@ function seriesName(deviceName, metric) {
 const legendDevices = computed(() => {
   return devices.value.map((item) => {
     const devId = item.device.id
-    const devName = item.device.name || item.device.mac
-    const metrics = devMetrics(item)
+    const devName = item.device.name || item.device.mac || '未命名'
+    const metrics = item.metrics || []
     const items = metrics.map((m) => {
       const key = seriesKey(devId, m)
       return {
         key,
         name: seriesName(devName, m),
         metric: m,
-        metricLabel: METRIC_META[m].label,
+        metricLabel: METRIC_META[m]?.label || m,
         color: comboColor(key)
       }
     })
@@ -96,430 +234,342 @@ function toggleDeviceAll(devItem) {
     devItem.items.forEach((it) => s.add(it.name))
   }
   hiddenSeries.value = s
+  scheduleRebuild()
 }
 
-function toggleSeries(name) {
-  const s = new Set(hiddenSeries.value)
-  if (s.has(name)) s.delete(name)
-  else s.add(name)
-  hiddenSeries.value = s
-}
-function isSeriesVisible(name) {
-  return !hiddenSeries.value.has(name)
+function gotoDevices(id) {
+  router.push({ name: 'devices', query: id ? { highlight: id } : {} })
 }
 
-// 是否需要双 Y 轴(同时存在光照 + 温/湿 时启用)
-const useDualAxis = computed(() => {
-  const hasLight = (chartSeries.value.value || []).some((s) => s.yAxisIndex === 1)
-  const hasSmall = (chartSeries.value.value || []).some((s) => s.yAxisIndex === 0)
-  return hasLight && hasSmall
-})
+const alertRevealText = '当传感器读数越限时,系统会按规则即时推送告警 — 严重程度分级,设备绑定精确到节点,记录可追溯。'
 
-// 过滤后的 series,传给 LineChart
-const displaySeries = computed(() =>
-  (chartSeries.value.value || []).filter((s) => isSeriesVisible(s.name))
-)
-
-async function load() {
-  loading.value = true
-  try {
-    const [ov, rt2] = await Promise.all([overview(), realtime()])
-    overviewData.value = ov
-    devices.value = rt2.devices || []
-  } finally {
-    loading.value = false
-  }
-}
-
-function fmt(v, d = 1) {
-  if (v === null || v === undefined) return '—'
-  return Number(v).toFixed(d)
-}
-
-// 设备是否处于活跃状态(同时兼容字符串 'active' 与数字 1)
-function isDeviceActive(status) {
-  return status === 'active' || status === 1 || status === '1'
-}
-
-function goToDevice(deviceId) {
-  router.push({ name: 'devices', query: { highlight: deviceId } })
-}
-
-// 设备 type 现在是 JSON 数组,如 ["temperature","humidity"]
-// 直接从中提取指标列表;type 为空/null 时回退为全部
-const METRIC_LABELS = {
-  temperature: '温度', humidity: '湿度', light: '光照',
-}
-function devMetrics(item) {
-  const t = item.device?.type
-  if (Array.isArray(t) && t.length) return t
-  // 回退: 无 type 时根据 latest 推断(初次加载)
-  const fallback = []
-  if (item.latest?.temperature != null) fallback.push('temperature')
-  if (item.latest?.humidity != null)    fallback.push('humidity')
-  if (item.latest?.light != null)       fallback.push('light')
-  return fallback.length ? fallback : ['temperature', 'humidity', 'light']
-}
-function typeLabel(typeArr) {
-  if (!Array.isArray(typeArr) || !typeArr.length) return null
-  return typeArr.map((k) => METRIC_LABELS[k] || k).join('/')
-}
-
-// 指标渲染元数据
-const METRIC_RENDER = {
-  temperature: { label: '温度', unit: '°C', digits: 1 },
-  humidity:    { label: '湿度', unit: '%',  digits: 1 },
-  light:       { label: '光照', unit: 'lx', digits: 0 },
-}
-
-const hasDevices = computed(() => devices.value.length > 0)
-
-// WebSocket 实时数据
-function onSocket() {
-  const s = getSocket()
-  // 先 off 再 on,避免组件多次挂载导致监听器累积
-  s.off('sensor_data').on('sensor_data', (p) => {
-    // p = { device_id, device_name, ts, temperature, humidity, light, ... }
-    // 用数据真实采集时间 ts(秒),否则用接收时刻,保证多设备时间轴对齐
-    const tsSec = Number(p.ts)
-    const tsMs = (tsSec && !isNaN(tsSec)) ? tsSec * 1000 : Date.now()
-    const devId = p.device_id
-    const devName = p.device_name || (devices.value.find((d) => d.device.id === devId)?.device?.name) || '未知'
-
-    // 对该设备推送的每个非空指标,维护独立 series
-    for (const metric of Object.keys(METRIC_META)) {
-      const raw = p[metric]
-      const key = seriesKey(devId, metric)
-      if (raw === null || raw === undefined) {
-        // 后端推送 null → 指标已取消订阅,清除该 series 的 rt 数据
-        delete rt[key]
-        continue
-      }
-      if (!rt[key]) rt[key] = []
-      // 时间戳去重:同毫秒的点跳过(避免重复)
-      const arr = rt[key]
-      if (arr.length && arr[arr.length - 1][0] === tsMs) {
-        arr[arr.length - 1][1] = Number(raw)
-      } else {
-        arr.push([tsMs, Number(raw)])
-      }
-      // 清理超出 30 分钟窗口的旧点
-      const cutoff = tsMs - WINDOW_MS
-      while (arr.length && arr[0][0] < cutoff) arr.shift()
-    }
-
-    // 重建所有 series(为不同设备的同指标保持独立)
-    // 节流:同一帧内多条推送合并为一次重建,避免高频推送频繁触发 LineChart watch
-    scheduleRebuild()
-
-    // 立即更新对应设备卡片的 latest(不节流,确保卡片读数实时)
-    const idx = devices.value.findIndex((d) => d.device.id === p.device_id)
-    if (idx >= 0) {
-      devices.value[idx].latest = { ...devices.value[idx].latest, ...p }
-      // 同步 device.type 到前端 device 对象
-      if (p.device_type && Array.isArray(p.device_type)) {
-        devices.value[idx].device = { ...devices.value[idx].device, type: p.device_type }
-      }
-    }
-  })
-
-  // 订阅切换事件:清除已取消订阅的指标 rt 数据
-  s.off('subscription_updated').on('subscription_updated', (data) => {
-    const enabled = new Set(data?.enabled || [])
-    const allMetrics = Object.keys(METRIC_META)
-    // led_status 和 device_status 也受订阅管理
-    allMetrics.push('led_status', 'device_status')
-    for (const metric of allMetrics) {
-      if (!enabled.has(metric)) {
-        // 删除所有设备下该指标的 rt 数据
-        for (const key of Object.keys(rt)) {
-          if (key.endsWith(':' + metric)) {
-            delete rt[key]
-          }
-        }
-      }
-    }
-    scheduleRebuild()
-  })
-}
-
-// 节流重建 seriesOut:用 requestAnimationFrame 合并同一帧内的多次 WS 推送
-let rebuildRaf = null
-function scheduleRebuild() {
-  if (rebuildRaf) return
-  rebuildRaf = requestAnimationFrame(() => {
-    rebuildRaf = null
-    const seriesOut = []
-    for (const [key, data] of Object.entries(rt)) {
-      const [devIdStr, metric] = key.split(':')
-      const devIdNum = Number(devIdStr)
-      const devItem = devices.value.find((d) => d.device.id === devIdNum)
-      const devName = devItem ? (devItem.device.name || devItem.device.mac) : '未知'
-      const name = seriesName(devName, metric)
-      const meta = METRIC_META[metric]
-      seriesOut.push({
-        name,
-        color: comboColor(key),
-        yAxisIndex: meta.yAxisIndex,
-        // 直接引用 rt[key] 数组,LineChart setOption merge 模式只更新 data
-        data
-      })
-    }
-    chartSeries.value = { value: seriesOut }
-  })
-}
-
-onMounted(async () => {
-  await load()
-  onSocket()
+let socket
+onMounted(() => {
+  load()
+  socket = getSocket()
+  socket.off('sensor_data', onSensorData)
+  socket.on('sensor_data', onSensorData)
+  socket.off('subscription_updated', onSubscriptionUpdated)
+  socket.on('subscription_updated', onSubscriptionUpdated)
 })
 onBeforeUnmount(() => {
-  getSocket().off('sensor_data')
-  getSocket().off('subscription_updated')
-  if (rebuildRaf) {
-    cancelAnimationFrame(rebuildRaf)
-    rebuildRaf = null
+  if (socket) {
+    socket.off('sensor_data', onSensorData)
+    socket.off('subscription_updated', onSubscriptionUpdated)
   }
+  if (raf) cancelAnimationFrame(raf)
 })
+
+const onlineCount = computed(() => overviewData.value.online_count || 0)
 </script>
 
 <template>
-  <div class="home">
-    <!-- 顶部统计带 -->
-    <section class="stat-band">
-      <div class="stat-card rise rise-1">
-        <div class="stat-label label-eyebrow">网关</div>
-        <div class="stat-num display">{{ overviewData.gateway_count }}</div>
-        <div class="stat-foot muted">已绑定</div>
-      </div>
-      <div class="stat-card rise rise-2">
-        <div class="stat-label label-eyebrow">设备总数</div>
-        <div class="stat-num display">{{ overviewData.device_count }}</div>
-        <div class="stat-foot muted">个节点</div>
-      </div>
-      <div class="stat-card rise rise-3">
-        <div class="stat-label label-eyebrow">已绑定</div>
-        <div class="stat-num display">{{ overviewData.bound_device_count }}</div>
-        <div class="stat-foot muted">监控中</div>
-      </div>
-      <div class="stat-card live rise rise-4">
-        <div class="stat-label label-eyebrow">实时通道</div>
-        <div class="stat-num display"><span class="live-dot dot-live"></span>WS</div>
-        <div class="stat-foot muted">推送中</div>
-      </div>
-    </section>
+  <div class="home page-container">
+    <PageHeader
+      title="实时监控"
+      eyebrow="REALTIME"
+      :rotating-words="['温度', '湿度', '光照', '状态']"
+    />
 
-    <!-- 实时折线 -->
-    <section class="chart-card rise rise-3" v-if="hasDevices">
-      <div class="card-head">
-        <div>
-          <div class="label-eyebrow">Realtime Stream</div>
-          <h2 class="card-title display">实时数据流</h2>
-          <div class="axis-hint muted">左轴:温度/湿度 · 右轴:光照</div>
-        </div>
-        <div class="legend2" role="group" aria-label="切换数据系列">
-          <div
-            v-for="d in legendDevices"
-            :key="d.devId"
-            class="lg-dev"
-            :class="{ off: d.allHidden }"
-          >
-            <button
-              type="button"
-              class="lg-dev-btn"
-              :title="d.allHidden ? '点击显示该设备全部' : '点击隐藏该设备全部'"
-              @click="toggleDeviceAll(d)"
-            >
-              <span class="lg-dev-swatches">
-                <i
-                  v-for="it in d.items"
-                  :key="it.key"
-                  :style="{ background: it.color }"
-                  :class="{ dim: !isSeriesVisible(it.name) }"
-                ></i>
-              </span>
-              <span class="lg-dev-name">{{ d.devName }}</span>
-              <span class="lg-dev-caret">▾</span>
-            </button>
-            <div class="lg-pop" role="group">
-              <button
-                v-for="it in d.items"
-                :key="it.key"
-                type="button"
-                class="lg-metric"
-                :class="{ off: !isSeriesVisible(it.name) }"
-                :title="isSeriesVisible(it.name) ? '点击隐藏' : '点击显示'"
-                @click="toggleSeries(it.name)"
-              >
-                <i :style="{ background: it.color }"></i>
-                <span class="lg-metric-name">{{ it.metricLabel }}</span>
-                <span class="lg-metric-state">{{ isSeriesVisible(it.name) ? '显示' : '隐藏' }}</span>
-              </button>
+    <!-- KPI 统计 -->
+    <div class="stats-grid">
+      <GlassStat
+        :ref="el => { if (el) statRefs.gateway = el }"
+        label="网关数量"
+        :value="overviewData.gateway_count"
+        unit="台"
+        eyebrow="GATEWAYS"
+        icon="gateway"
+        accent="sage"
+        :loaded="!loading"
+      />
+      <GlassStat
+        :ref="el => { if (el) statRefs.device = el }"
+        label="设备总数"
+        :value="overviewData.device_count"
+        unit="台"
+        eyebrow="DEVICES"
+        icon="devices"
+        accent="teal"
+        :loaded="!loading"
+      />
+      <GlassStat
+        :ref="el => { if (el) statRefs.online = el }"
+        label="在线设备"
+        :value="onlineCount"
+        unit="台"
+        eyebrow="ONLINE"
+        icon="wifi"
+        accent="mint"
+        :loaded="!loading"
+      />
+      <GlassStat
+        :ref="el => { if (el) statRefs.alert = el }"
+        label="告警总数"
+        :value="overviewData.alert_count"
+        unit="条"
+        eyebrow="ALERTS"
+        icon="bell"
+        accent="amber"
+        :loaded="!loading"
+      />
+    </div>
+
+    <!-- 实时数据流图表 -->
+      <div v-if="loading" class="chart-block">
+        <GlassCard padding="p-6">
+          <div class="chart-head">
+            <div>
+              <div class="glass-skeleton" style="width: 100px; height: 12px; margin-bottom: 8px" />
+              <div class="glass-skeleton" style="width: 240px; height: 20px" />
+            </div>
+            <div class="glass-skeleton" style="width: 60px; height: 24px; border-radius: 999px" />
+          </div>
+          <div class="glass-skeleton" style="width: 100%; height: 340px; margin-top: 16px; border-radius: 8px" />
+        </GlassCard>
+      </div>
+      <div v-else class="chart-block">
+        <GlassCard padding="p-6">
+          <div class="chart-head">
+            <div>
+              <p class="eyebrow mb-1">DATA STREAM</p>
+              <h3 class="chart-title">实时数据流 · 30 分钟滚动窗口</h3>
+            </div>
+            <div class="chart-status">
+              <span class="status-dot status-dot--connected" />
+              <span class="chart-status-text">LIVE</span>
             </div>
           </div>
+
+          <!-- 两级图例:一级设备(hover 展开二级指标),点击切换显隐 -->
+          <div v-if="legendDevices.length" class="chart-legend" role="group" aria-label="切换数据系列">
+            <div
+              v-for="d in legendDevices"
+              :key="d.devId"
+              class="lg-dev"
+              :class="{ off: d.allHidden }"
+            >
+              <button
+                type="button"
+                class="lg-dev-btn"
+                data-cursor-target
+                :title="d.allHidden ? '点击显示该设备全部' : '点击隐藏该设备全部'"
+                @click="toggleDeviceAll(d)"
+              >
+                <span class="lg-dev-swatches">
+                  <i
+                    v-for="it in d.items"
+                    :key="it.key"
+                    :style="{ background: it.color }"
+                    :class="{ dim: !isSeriesVisible(it.name) }"
+                  ></i>
+                </span>
+                <span class="lg-dev-name">{{ d.devName }}</span>
+                <span class="lg-dev-caret">▾</span>
+              </button>
+              <div class="lg-pop" role="group">
+                <button
+                  v-for="it in d.items"
+                  :key="it.key"
+                  type="button"
+                  class="lg-metric"
+                  :class="{ off: !isSeriesVisible(it.name) }"
+                  data-cursor-target
+                  :title="isSeriesVisible(it.name) ? '点击隐藏' : '点击显示'"
+                  @click="toggleSeries(it.name)"
+                >
+                  <i :style="{ background: it.color }"></i>
+                  <span class="lg-metric-name">{{ it.metricLabel }}</span>
+                  <span class="lg-metric-state">{{ isSeriesVisible(it.name) ? '显示' : '隐藏' }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="chartSeries.value.length" class="chart-wrap">
+            <LineChart :series="chartSeries.value" dual />
+          </div>
+          <div v-else class="chart-empty">
+            <Icon name="activity" :size="40" class="opacity-30 mb-3" />
+            <p class="text-sm" style="color: var(--text-tertiary)">等待传感器推送数据…</p>
+          </div>
+        </GlassCard>
+      </div>
+
+    <!-- 设备卡片网格 -->
+      <div v-if="loading" class="devices-block">
+        <div class="devices-head">
+          <div class="glass-skeleton" style="width: 60px; height: 12px" />
+          <div class="glass-skeleton" style="width: 160px; height: 20px; margin-top: 4px" />
+        </div>
+        <div class="devices-grid">
+          <div v-for="i in 3" :key="i" class="glass-skeleton" style="height: 200px; border-radius: var(--radius-lg)" />
         </div>
       </div>
-      <div class="chart-box">
-        <LineChart :series="displaySeries" :dual="useDualAxis" />
+      <div v-else class="devices-block">
+      <div class="devices-head">
+        <p class="eyebrow">DEVICES</p>
+        <h3 class="devices-title">设备实时状态</h3>
       </div>
-    </section>
 
-    <!-- 设备卡片 -->
-    <section class="dev-section" v-if="hasDevices">
-      <div class="section-head rise rise-4">
-        <h2 class="section-title display">已监控设备</h2>
-        <span class="section-sub muted">每个节点的最新读数</span>
+      <div v-if="!devices.length && !loading" class="devices-empty-wrap">
+        <GlassCard padding="p-8">
+          <GlassEmpty
+            icon="devices"
+            title="暂无绑定设备"
+            description="前往设备管理页绑定网关与终端设备"
+          >
+            <template #action>
+              <button class="glass-btn glass-btn--primary" data-cursor-target @click="gotoDevices()">
+                <Icon name="arrowRight" :size="14" /> 前往设备管理
+              </button>
+            </template>
+          </GlassEmpty>
+        </GlassCard>
       </div>
-      <div class="dev-grid">
-        <article
-    v-for="(item, i) in devices"
-    :key="item.device.id"
-    class="dev-card rise"
-    :class="{ sleeping: !isDeviceActive(item.latest?.device_status) }"
-    :style="{ animationDelay: 0.3 + i * 0.06 + 's' }"
-    @click="goToDevice(item.device.id)"
-    title="点击跳转到设备管理页面"
-  >
-          <div class="dc-content">
-            <div class="dc-top">
-              <div class="dc-name">{{ item.device.name || item.device.mac }}</div>
-              <span class="dc-status" :class="item.latest?.device_status || 'sleep'">
-                {{ item.latest?.device_status === 'active' ? '活跃' : '休眠' }}
-              </span>
+
+      <div v-else class="devices-grid">
+        <GlassCard
+          v-for="(d, i) in devices"
+          :key="d.device.id"
+          padding="p-5"
+          class="device-card sheen-on-hover"
+          :style="{ animationDelay: `${Math.min(i * 0.04, 0.2)}s` }"
+          data-cursor-target
+          @click="gotoDevices(d.device.id)"
+        >
+          <div class="device-card-head">
+            <div class="device-name-row">
+              <span class="status-dot" :class="d.latest?.device_status === 'sleep' ? 'status-dot--sleep' : 'status-dot--connected'" />
+              <span class="device-name">{{ d.device.name || d.device.mac || '未命名' }}</span>
             </div>
-            <div class="dc-mac-row">
-              <div class="dc-mac mono">{{ item.device.mac }}</div>
-              <span v-if="typeLabel(item.device.type)" class="dc-type-badge" :title="`设备类型:${typeLabel(item.device.type)}`">
-                {{ typeLabel(item.device.type) }}
+            <span class="tag-pill">{{ d.metrics.length }} 指标</span>
+          </div>
+          <p class="device-mac">{{ d.device.mac || '—' }}</p>
+
+          <div class="device-metrics">
+            <div
+              v-for="m in d.metrics"
+              :key="m"
+              class="device-metric"
+              :style="{ color: METRIC_META[m]?.color }"
+            >
+              <Icon :name="METRIC_META[m]?.icon" :size="14" />
+              <span class="device-metric-label">{{ METRIC_META[m]?.label }}</span>
+              <span class="device-metric-value data-value">
+                {{ d.latest && d.latest[m] != null ? Number(d.latest[m]).toFixed(m === 'light' ? 0 : 1) : '—' }}
               </span>
+              <span class="device-metric-unit">{{ METRIC_META[m]?.unit }}</span>
             </div>
 
-            <div class="dc-reads">
-              <div v-for="m in devMetrics(item)" :key="m" class="read">
-                <div class="read-label label-eyebrow">{{ METRIC_RENDER[m].label }}</div>
-                <div class="read-val mono">
-                  <b>{{ fmt(item.latest?.[m], METRIC_RENDER[m].digits) }}</b>
-                  <span>{{ METRIC_RENDER[m].unit }}</span>
-                </div>
-              </div>
-              <div class="read">
-                <div class="read-label label-eyebrow">LED</div>
-                <div class="led-pill" :class="{ on: item.latest?.led_status }">
-                  <span class="led-bulb"></span>{{ item.latest?.led_status ? '开' : '关' }}
-                </div>
-              </div>
+            <!-- LED 开关状态 -->
+            <div class="device-metric device-led">
+              <span class="device-metric-label">LED</span>
+              <span class="led-pill" :class="{ on: isLedOn(d.latest?.led_status) }">
+                <span class="led-bulb"></span>
+                <span class="led-text">{{ isLedOn(d.latest?.led_status) ? '开' : '关' }}</span>
+              </span>
             </div>
           </div>
 
           <!-- 休眠亚克力遮罩 -->
-          <div v-if="!isDeviceActive(item.latest?.device_status)" class="sleep-veil" aria-hidden="true">
+          <div v-if="!isDeviceActive(d.latest?.device_status)" class="sleep-veil" aria-hidden="true">
             <div class="veil-inner">
-              <div class="veil-moon">☾</div>
-              <div class="veil-text display">休眠中</div>
-              <div class="veil-sub label-eyebrow">设备已进入低功耗</div>
+              <div class="veil-moon"><Icon name="moon" :size="30" style="color: var(--teal)" /></div>
+              <div class="veil-text">休眠中</div>
+              <div class="veil-sub eyebrow">设备已进入低功耗</div>
             </div>
           </div>
-        </article>
+        </GlassCard>
       </div>
-    </section>
+    </div>
 
-    <!-- 空状态 -->
-    <section class="empty" v-else-if="!loading">
-      <div class="empty-art"></div>
-      <h3 class="display">暂无监控数据</h3>
-      <p class="muted">尚未绑定任何设备。前往设备管理,寻找并绑定网关下的设备,数据将在此实时呈现。</p>
-      <el-button type="primary" @click="router.push({ name: 'devices' })">前往设备管理</el-button>
-    </section>
+    <!-- 告警说明 (ScrollReveal) -->
+    <div class="alert-reveal-block">
+      <GlassCard padding="p-4 px-6">
+        <div class="alert-reveal-head">
+          <Icon name="shield" :size="16" />
+          <span class="eyebrow">ALERT SYSTEM</span>
+        </div>
+        <ScrollReveal
+          :text="alertRevealText"
+          tag="p"
+          class="alert-reveal-text"
+        />
+      </GlassCard>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.home {
-  max-width: 1240px;
+.home { }
+
+/* 骨架屏 → 内容的平滑切换 */
+.fade-swap-enter-active,
+.fade-swap-leave-active {
+  transition: opacity 0.35s ease;
+}
+.fade-swap-enter-from,
+.fade-swap-leave-to {
+  opacity: 0;
 }
 
-/* 统计带 */
-.stat-band {
+.stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 18px;
-  margin-bottom: 32px;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 22px 24px;
-  position: relative;
-  overflow: hidden;
+@media (max-width: 1024px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 36px;
-  height: 2px;
-  background: var(--sage);
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr; }
 }
-.stat-label {
-  color: var(--ink-4);
-  font-size: 10px;
+
+.chart-block { margin-bottom: 1rem; }
+.chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1rem;
 }
-.stat-num {
-  font-size: 44px;
-  font-weight: 300;
-  line-height: 1;
-  margin: 14px 0 6px;
-  letter-spacing: -0.03em;
+.chart-title {
+  font-family: 'Roboto Flex', sans-serif;
+  font-variation-settings: 'wght' 600;
+  font-size: 16px;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.chart-status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
-.stat-foot {
+.chart-status-text {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--ink-4);
+  letter-spacing: 0.12em;
+  color: var(--mint);
 }
-.live-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--sage);
-  box-shadow: 0 0 0 4px var(--sage-soft);
+.chart-wrap {
+  height: 240px;
 }
-.stat-card.live::before { background: var(--sage); }
-
-/* 图表卡 */
-.chart-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 26px 28px;
-  margin-bottom: 36px;
-}
-.card-head {
+.chart-empty {
+  height: 240px;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin-bottom: 22px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
-.card-title {
-  font-size: 22px;
-  font-weight: 400;
-  margin-top: 4px;
-}
-.axis-hint {
-  font-size: 11px;
-  margin-top: 6px;
-  letter-spacing: 0.02em;
-}
-/* 两级图例:一级设备 hover 展开二级指标浮层 */
-.legend2 {
+
+/* —— 两级图例:一级设备 hover 展开二级指标浮层 —— */
+.chart-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  max-width: 62%;
-  justify-content: flex-end;
+  margin-bottom: 12px;
+  max-width: 100%;
 }
 .lg-dev {
   position: relative;
@@ -529,19 +579,19 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--ink-3);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
   padding: 5px 10px;
   cursor: pointer;
-  transition: color 0.2s var(--ease), background 0.2s var(--ease), border-color 0.2s var(--ease);
-  font-family: var(--font-sans);
+  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  font-family: 'DM Sans', sans-serif;
 }
 .lg-dev-btn:hover {
-  color: var(--ink);
-  background: var(--sage-tint);
-  border-color: var(--line-strong);
+  color: var(--text-primary);
+  background: rgba(132, 204, 22, 0.10);
+  border-color: rgba(132, 204, 22, 0.25);
 }
 .lg-dev-swatches {
   display: inline-flex;
@@ -551,26 +601,30 @@ onBeforeUnmount(() => {
   width: 8px;
   height: 9px;
   border-radius: 2px;
-  transition: opacity 0.2s var(--ease);
+  transition: opacity 0.2s ease;
 }
 .lg-dev-swatches i.dim {
   opacity: 0.25;
 }
 .lg-dev-name {
   font-weight: 500;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lg-dev-caret {
   font-size: 9px;
-  color: var(--ink-4);
-  transition: transform 0.2s var(--ease);
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
 }
 .lg-dev:hover .lg-dev-caret,
 .lg-dev:focus-within .lg-dev-caret {
   transform: rotate(180deg);
-  color: var(--ink-2);
+  color: var(--text-secondary);
 }
 .lg-dev.off .lg-dev-btn {
-  color: var(--ink-5);
+  color: var(--text-tertiary);
   opacity: 0.7;
 }
 .lg-dev.off .lg-dev-btn:hover {
@@ -581,21 +635,21 @@ onBeforeUnmount(() => {
 .lg-pop {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   z-index: 20;
   min-width: 172px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 6px;
-  background: var(--surface-hi);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  background: var(--glass-bg);
+  border: 1px solid rgba(132, 204, 22, 0.22);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
-  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), visibility 0.18s;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
 }
 .lg-dev:hover .lg-pop,
 .lg-dev:focus-within .lg-pop {
@@ -609,19 +663,19 @@ onBeforeUnmount(() => {
   gap: 8px;
   width: 100%;
   font-size: 12px;
-  color: var(--ink-2);
+  color: var(--text-secondary);
   background: transparent;
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s var(--ease), color 0.15s var(--ease);
-  font-family: var(--font-sans);
+  transition: background 0.15s ease, color 0.15s ease;
+  font-family: 'DM Sans', sans-serif;
 }
 .lg-metric:hover {
-  background: var(--sage-tint);
-  color: var(--ink);
+  background: rgba(132, 204, 22, 0.10);
+  color: var(--text-primary);
 }
 .lg-metric i {
   width: 10px;
@@ -634,82 +688,153 @@ onBeforeUnmount(() => {
 }
 .lg-metric-state {
   font-size: 10px;
-  color: var(--ink-4);
+  color: var(--text-tertiary);
   letter-spacing: 0.04em;
 }
 .lg-metric.off {
-  color: var(--ink-5);
+  color: var(--text-tertiary);
 }
 .lg-metric.off i {
   background: transparent !important;
-  border: 1px dashed var(--ink-5);
+  border: 1px dashed var(--text-tertiary);
 }
 .lg-metric.off .lg-metric-state {
-  color: var(--ink-5);
-}
-.chart-box {
-  height: 280px;
+  color: var(--text-tertiary);
 }
 
-/* 设备卡片网格 */
-.section-head {
+.devices-block { margin-bottom: 1rem; }
+.devices-head {
+  margin-bottom: 1rem;
+}
+.devices-title {
+  font-family: 'Roboto Flex', sans-serif;
+  font-variation-settings: 'wght' 600;
+  font-size: 18px;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+  margin-top: 4px;
+}
+.devices-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.device-card {
+  cursor: pointer;
+  height: 100%;
+  animation: device-fade-in 0.5s ease both;
+}
+@keyframes device-fade-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.device-card-head {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
-  margin-bottom: 18px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
 }
-.section-title {
-  font-size: 22px;
-  font-weight: 400;
+.device-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.section-sub {
+.device-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-mac {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 14px;
+}
+.device-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.device-metric {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
 }
-.dev-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-  gap: 16px;
+.device-metric-label {
+  color: var(--text-tertiary);
+  flex: 1;
 }
-.dev-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 22px;
-  transition: border-color 0.3s var(--ease), transform 0.3s var(--ease);
+.device-metric-value {
+  font-weight: 600;
+}
+.device-metric-unit {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* —— LED 状态药丸(绿色系) —— */
+.device-led {
+  margin-top: 2px;
+}
+.led-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+  transition: color 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+}
+.led-bulb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+  flex-shrink: 0;
+}
+.led-pill.on {
+  color: var(--mint);
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.08);
+}
+.led-pill.on .led-bulb {
+  background: var(--mint);
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18), 0 0 8px rgba(52, 211, 153, 0.55);
+}
+
+/* —— 休眠亚克力遮罩(绿色系) —— */
+.device-card {
   position: relative;
-  overflow: hidden;
-  cursor: pointer;
 }
-.dev-card:hover {
-  border-color: var(--sage);
-  transform: translateY(-2px);
-}
-
-/* 休眠状态:卡片整体降饱和,边框转灰 */
-.dev-card.sleeping {
-  border-color: var(--line-strong);
-}
-.dev-card.sleeping:hover {
-  border-color: var(--sage);
-  transform: translateY(-2px);
-}
-
-/* 亚克力遮罩 */
 .sleep-veil {
   position: absolute;
   inset: 0;
   z-index: 5;
   display: grid;
   place-items: center;
-  /* 模糊下方数据 + 亚克力质感 */
-  backdrop-filter: blur(8px) saturate(0.6);
-  -webkit-backdrop-filter: blur(8px) saturate(0.6);
-  background: color-mix(in srgb, var(--paper) 32%, transparent);
+  backdrop-filter: blur(16px) saturate(0.4);
+  -webkit-backdrop-filter: blur(16px) saturate(0.4);
+  background: rgba(10, 18, 14, 0.82);
   border-radius: var(--radius-lg);
-  animation: veil-in 0.4s var(--ease);
+  animation: veil-in 0.4s ease;
+}
+[data-theme="light"] .sleep-veil {
+  background: rgba(230, 235, 230, 0.88);
 }
 @keyframes veil-in {
-  from { opacity: 0; backdrop-filter: blur(0); }
+  from { opacity: 0; }
   to   { opacity: 1; }
 }
 .veil-inner {
@@ -718,17 +843,16 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 14px;
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-hi) 70%, transparent);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: var(--glass-bg);
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
 }
 .veil-moon {
-  font-size: 30px;
-  color: var(--amber);
+  color: var(--teal);
   line-height: 1;
-  filter: drop-shadow(0 0 8px var(--amber-soft));
+  filter: drop-shadow(0 0 8px rgba(20, 184, 166, 0.45));
   animation: moon-pulse 3s ease-in-out infinite;
 }
 @keyframes moon-pulse {
@@ -736,137 +860,28 @@ onBeforeUnmount(() => {
   50%      { opacity: 1;    transform: scale(1.08); }
 }
 .veil-text {
+  font-family: 'Roboto Flex', sans-serif;
+  font-variation-settings: 'wght' 600;
   font-size: 17px;
-  font-weight: 500;
-  color: var(--ink);
+  color: var(--text-primary);
   letter-spacing: 0.02em;
 }
 .veil-sub {
-  color: var(--ink-4);
-  font-size: 10px;
-}
-.dc-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.dc-name {
-  font-family: var(--font-display);
-  font-size: 19px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-}
-.dc-status {
-  font-size: 10px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.dc-status.active {
-  background: var(--sage-soft);
-  color: var(--sage-deep);
-}
-.dc-status.sleep {
-  background: var(--paper-deep);
-  color: var(--ink-4);
-}
-.dc-mac-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 4px;
-  margin-bottom: 18px;
-}
-.dc-mac {
-  font-size: 11px;
-  color: var(--ink-4);
-  letter-spacing: 0.04em;
-}
-.dc-type-badge {
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--sage-tint);
-  color: var(--sage-deep);
-  border: 1px solid var(--line-strong);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.dc-reads {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px 0;
-}
-.read-label {
-  font-size: 9px;
-  color: var(--ink-4);
-}
-.read-val {
-  font-size: 13px;
-  color: var(--ink-4);
-  margin-top: 3px;
-}
-.read-val b {
-  font-size: 22px;
-  font-weight: 400;
-  color: var(--ink);
-  margin-right: 3px;
-}
-.led-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--ink-3);
-  margin-top: 6px;
-}
-.led-bulb {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--ink-5);
-  transition: all 0.3s var(--ease);
-}
-.led-pill.on {
-  color: var(--sage-deep);
-}
-.led-pill.on .led-bulb {
-  background: var(--sage);
-  box-shadow: 0 0 0 3px var(--sage-soft);
+  color: var(--text-tertiary);
 }
 
-/* 空状态 */
-.empty {
+.alert-reveal-block { margin-top: 1rem; }
+.alert-reveal-head {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  text-align: center;
-  padding: 80px 20px;
-}
-.empty-art {
-  width: 120px;
-  height: 120px;
-  border-radius: 50%;
-  margin-bottom: 28px;
-  background:
-    radial-gradient(circle at 40% 35%, var(--sage-soft), transparent 60%),
-    repeating-radial-gradient(circle at 50% 50%, transparent 0 8px, var(--line) 8px 9px);
-  opacity: 0.7;
-}
-.empty h3 {
-  font-size: 26px;
-  font-weight: 400;
+  gap: 8px;
+  color: var(--mint);
   margin-bottom: 10px;
 }
-.empty p {
-  margin-bottom: 24px;
-  max-width: 380px;
-}
-
-@media (max-width: 1100px) {
-  .stat-band { grid-template-columns: repeat(2, 1fr); }
+.alert-reveal-text {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
 }
 </style>
