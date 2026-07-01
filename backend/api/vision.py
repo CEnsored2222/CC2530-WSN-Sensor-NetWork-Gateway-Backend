@@ -14,6 +14,7 @@
     [3] Yolo ↔ 后端(服务 token)
 """
 import base64
+import urllib3
 
 import requests
 from flask import Blueprint, g, jsonify, request
@@ -22,6 +23,9 @@ from config import Config
 from extensions import db
 from models.vision import FaceLibrary
 from utils.auth import jwt_required
+
+# 抑制自签名证书的 InsecureRequestWarning
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 bp = Blueprint("vision", __name__)
 
@@ -50,6 +54,7 @@ def _call_yolo_embed(frame_b64: str):
             json={"frame": frame_b64},
             headers={"Authorization": f"Bearer {Config.VISION_INTERNAL_TOKEN}"},
             timeout=10,
+            verify=False,  # SakuraFrp 自签名证书,跳过验证
         )
     except requests.RequestException as e:
         return None, f"yolo unreachable: {e}"

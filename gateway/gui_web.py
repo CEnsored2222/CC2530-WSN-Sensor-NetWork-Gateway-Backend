@@ -47,10 +47,42 @@ class GatewayApi:
         self._gateway_running = False
         self._window = None
         self._maximized = False
+        self._http = None
+        self._yolo = None
+        self._ws_bridge = None
 
     def set_window(self, window):
         """设置 webview 窗口引用（用于 evaluate_js 和 closing 事件）。"""
         self._window = window
+        # ws_bridge 已实例化时同步窗口引用
+        if self._ws_bridge is not None:
+            try:
+                self._ws_bridge.set_window(window)
+            except Exception:
+                pass
+
+    # ==================== 懒加载（避免未安装依赖时崩溃） ====================
+
+    def _get_http(self):
+        """懒加载 HttpProxy 单例。"""
+        if self._http is None:
+            from http_proxy import HttpProxy
+            self._http = HttpProxy()
+        return self._http
+
+    def _get_yolo(self):
+        """懒加载 YoloService 单例。"""
+        if self._yolo is None:
+            from yolo_service import YoloService
+            self._yolo = YoloService()
+        return self._yolo
+
+    def _get_ws_bridge(self):
+        """懒加载 WsBridge 单例。"""
+        if self._ws_bridge is None:
+            from ws_bridge import WsBridge
+            self._ws_bridge = WsBridge(window=self._window)
+        return self._ws_bridge
 
     # ==================== 配置 ====================
 
@@ -63,6 +95,13 @@ class GatewayApi:
             "EMQX_PORT": str(config.EMQX_PORT),
             "EMQX_USERNAME": config.EMQX_USERNAME,
             "EMQX_PASSWORD": config.EMQX_PASSWORD,
+            # 新增字段（HTTP 代理 / Yolo 视觉）
+            "BACKEND_URL": config.BACKEND_URL,
+            "YOLO_DEVICE": config.YOLO_DEVICE,
+            "YOLO_ENABLED": config.YOLO_ENABLED,
+            "YOLO_IMGSZ": str(config.YOLO_IMGSZ),
+            "FACE_MODEL": config.FACE_MODEL,
+            "FACE_SIM_THRESHOLD": str(config.FACE_SIM_THRESHOLD),
         }
 
     def save_config(self, data):
@@ -74,6 +113,37 @@ class GatewayApi:
             config.set_config_value("EMQX_PORT", int(data.get("EMQX_PORT", 1883)))
             config.set_config_value("EMQX_USERNAME", data.get("EMQX_USERNAME", ""))
             config.set_config_value("EMQX_PASSWORD", data.get("EMQX_PASSWORD", ""))
+            # 新增字段（兼容前端 SetupCard 的驼峰命名）
+            if "BACKEND_URL" in data or "backendUrl" in data:
+                config.set_config_value(
+                    "BACKEND_URL",
+                    data.get("BACKEND_URL") or data.get("backendUrl", ""),
+                )
+            if "YOLO_DEVICE" in data or "yoloDevice" in data:
+                config.set_config_value(
+                    "YOLO_DEVICE",
+                    data.get("YOLO_DEVICE") or data.get("yoloDevice", ""),
+                )
+            if "YOLO_ENABLED" in data or "yoloEnabled" in data:
+                config.set_config_value(
+                    "YOLO_ENABLED",
+                    data.get("YOLO_ENABLED") if "YOLO_ENABLED" in data else data.get("yoloEnabled", True),
+                )
+            if "YOLO_IMGSZ" in data or "yoloImgsz" in data:
+                config.set_config_value(
+                    "YOLO_IMGSZ",
+                    int(data.get("YOLO_IMGSZ") or data.get("yoloImgsz", 480)),
+                )
+            if "FACE_MODEL" in data or "faceModel" in data:
+                config.set_config_value(
+                    "FACE_MODEL",
+                    data.get("FACE_MODEL") or data.get("faceModel", "buffalo_l"),
+                )
+            if "FACE_SIM_THRESHOLD" in data or "faceSimThreshold" in data:
+                config.set_config_value(
+                    "FACE_SIM_THRESHOLD",
+                    float(data.get("FACE_SIM_THRESHOLD") or data.get("faceSimThreshold", 0.5)),
+                )
             config._get_config().save_to_file()
             log("[GUI] 配置已保存到 gateway.ini", "SUCCESS")
             return {"success": True}
@@ -218,6 +288,222 @@ class GatewayApi:
                 break
         return logs
 
+    # ==================== HTTP 代理（转发到云端后端） ====================
+
+    def http_get(self, path, params=None):
+        """转发 GET 请求到云端后端。path 为含 /api 前缀的完整路径。"""
+        try:
+            return self._get_http().get(path, params)
+        except Exception as e:
+            return {"status": 0, "data": {"error": str(e)}}
+
+    def http_post(self, path, body=None):
+        """转发 POST 请求到云端后端。PUT/DELETE 也走此通道。"""
+        try:
+            return self._get_http().post(path, body)
+        except Exception as e:
+            return {"status": 0, "data": {"error": str(e)}}
+
+    def set_jwt(self, token):
+        """持久化 JWT token（登录成功后调用）。"""
+        try:
+            self._get_http().set_token(token)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def logout(self):
+        """清除 JWT token（退出登录时调用）。"""
+        try:
+            self._get_http().clear_token()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def test_backend_connection(self, url=None):
+        """测试后端连通性，返回 {reachable, latency_ms, status_code, error}。"""
+        try:
+            return self._get_http().test_connection(url)
+        except Exception as e:
+            return {
+                "reachable": False,
+                "latency_ms": 0,
+                "status_code": 0,
+                "error": str(e),
+            }
+
+    # ==================== Yolo 视觉 ====================
+
+    @staticmethod
+    def _decode_frame(frame_b64):
+        """base64 JPEG/PNG → BGR numpy 数组。
+
+        兼容 data URI 前缀（data:image/jpeg;base64,xxxx）。
+        """
+        import base64
+        import numpy as np
+        import cv2
+        if not frame_b64:
+            raise ValueError("frame_b64 为空")
+        # 移除 data URI 前缀
+        if "," in frame_b64 and frame_b64.startswith("data:"):
+            frame_b64 = frame_b64.split(",", 1)[1]
+        img_bytes = base64.b64decode(frame_b64)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("base64 解码失败:图像格式无法识别")
+        return frame
+
+    @staticmethod
+    def _parse_classes(classes_str):
+        """解析类别字符串为列表。如 "0,2,5" → [0, 2, 5]。"""
+        if not classes_str:
+            return None
+        try:
+            return [int(c.strip()) for c in str(classes_str).split(",") if c.strip()]
+        except ValueError:
+            return None
+
+    def vision_detect(self, frame_b64, options=None):
+        """目标检测。options: {conf, iou, classes}。"""
+        try:
+            frame = self._decode_frame(frame_b64)
+            opts = options or {}
+            conf = opts.get("conf")
+            iou = opts.get("iou")
+            classes = self._parse_classes(opts.get("classes"))
+            return self._get_yolo().detect(frame, conf=conf, iou=iou, classes=classes)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def vision_recognize(self, frame_b64, user_id):
+        """人脸识别：本地比对拉取的人脸库。"""
+        try:
+            frame = self._decode_frame(frame_b64)
+            return self._get_yolo().recognize(frame, int(user_id))
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def vision_face_embed(self, frame_b64):
+        """人脸特征提取，返回 base64 编码的 float32 embedding。"""
+        try:
+            frame = self._decode_frame(frame_b64)
+            return self._get_yolo().extract_embedding(frame)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def vision_invalidate_faces(self, user_id=None):
+        """失效人脸库缓存（用户人脸更新后调用）。"""
+        try:
+            return self._get_yolo().invalidate_face_cache(
+                int(user_id) if user_id is not None else None
+            )
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def yolo_status(self):
+        """返回 Yolo 模块状态（不触发初始化）。"""
+        try:
+            return self._get_yolo().status()
+        except Exception as e:
+            return {
+                "ready": False,
+                "enabled": False,
+                "error": str(e),
+            }
+
+    def yolo_switch_device(self, device):
+        """切换 Yolo 推理设备（""=自动, "cpu", "0"=GPU0）。"""
+        try:
+            return self._get_yolo().switch_device(device)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def yolo_check_gpu_available(self):
+        """检查 GPU 是否可用（不加载模型）。"""
+        try:
+            return self._get_yolo().check_gpu_available()
+        except Exception as e:
+            return {
+                "gpu_available": False,
+                "device_count": 0,
+                "devices": [],
+                "error": str(e),
+            }
+
+    # ==================== 模型下载管理 ====================
+
+    def download_model(self, model_name):
+        """下载模型，进度通过 evaluate_js 推送到前端。
+
+        前端需注册 window.__modelDownloadProgress(modelName, downloaded, total, percent) 回调。
+        """
+        from model_manager import download_model as _download
+
+        def on_progress(downloaded, total, percent):
+            if self._window is None:
+                return
+            try:
+                js = (
+                    f"window.__modelDownloadProgress && "
+                    f"window.__modelDownloadProgress({model_name!r}, "
+                    f"{downloaded}, {total}, {percent})"
+                )
+                self._window.evaluate_js(js)
+            except Exception:
+                pass
+
+        try:
+            return _download(model_name, on_progress=on_progress)
+        except Exception as e:
+            return {"ok": False, "path": "", "error": str(e)}
+
+    def list_models(self):
+        """列出所有已知模型的安装状态。"""
+        try:
+            from model_manager import list_models as _list
+            return _list()
+        except Exception as e:
+            return []
+
+    def is_model_installed(self, model_name):
+        """检查模型是否已安装。"""
+        try:
+            from model_manager import is_model_installed as _check
+            return _check(model_name)
+        except Exception:
+            return False
+
+    # ==================== WebSocket 桥接（备选方案） ====================
+
+    def ws_bridge_start(self):
+        """启动 WebSocket 桥接（前端直连失败时的备选方案）。"""
+        try:
+            return self._get_ws_bridge().start()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def ws_bridge_stop(self):
+        """停止 WebSocket 桥接。"""
+        try:
+            self._get_ws_bridge().stop()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def ws_bridge_status(self):
+        """返回 WebSocket 桥接状态。"""
+        try:
+            return self._get_ws_bridge().status()
+        except Exception as e:
+            return {
+                "running": False,
+                "connected": False,
+                "backend_url": "",
+                "error": str(e),
+            }
+
     # ==================== 窗口控制 ====================
 
     def minimize_window(self):
@@ -244,7 +530,7 @@ class GatewayApi:
         self._cleanup()
 
     def _cleanup(self):
-        """清理所有资源:停止网关线程 + 关闭串口。
+        """清理所有资源:停止网关线程 + 关闭串口 + 停止 ws_bridge。
 
         窗口关闭时必须显式关闭串口,否则 Python 进程退出前串口句柄可能残留,
         导致下次启动 EXE 时报"串口被占用"。
@@ -263,6 +549,13 @@ class GatewayApi:
             self._serial_port_obj = None
             self._serial_open = False
         self._gateway_running = False
+        # 停止 WebSocket 桥接
+        if self._ws_bridge is not None:
+            try:
+                self._ws_bridge.stop()
+            except Exception:
+                pass
+            self._ws_bridge = None
 
 
 def main():
@@ -270,7 +563,15 @@ def main():
     import webview
 
     api = GatewayApi()
-    html_path = resource_path("gui_app.html")
+
+    # 优先加载前端构建产物（Vue dist），回退到旧版 gui_app.html
+    frontend_dist = resource_path(os.path.join("frontend", "dist", "index.html"))
+    if os.path.exists(frontend_dist):
+        html_path = frontend_dist
+        print(f"[GUI] 加载前端构建产物: {html_path}")
+    else:
+        html_path = resource_path("gui_app.html")
+        print(f"[GUI] 加载旧版 HTML: {html_path}")
 
     window = webview.create_window(
         title="WSN-Gateway",

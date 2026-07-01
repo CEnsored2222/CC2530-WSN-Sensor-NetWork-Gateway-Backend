@@ -43,12 +43,12 @@ class Config:
 
     # ============ insightface 人脸识别 ============
     FACE_MODEL = "buffalo_l"
-    FACE_DET_SIZE = 640
+    FACE_DET_SIZE = 480
     FACE_SIM_THRESHOLD = 0.5
 
     # ============ 服务与通信(★ 部署时必填) ============
     PORT = 6001
-    HOST = "127.0.0.1"
+    HOST = "0.0.0.0"
     BACKEND_URL = "http://127.0.0.1:5000"  # 改为云端 Atmos 后端地址
     INTERNAL_TOKEN = "zheshiyigetoken"     # 与云端 .env 的 VISION_INTERNAL_TOKEN 保持一致
 

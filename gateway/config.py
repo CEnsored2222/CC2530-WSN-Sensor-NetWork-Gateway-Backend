@@ -41,9 +41,20 @@ class Config:
         "TOPIC_PREFIX": "smart_home/gateway",
         "MAC_TIMEOUT_SECONDS": 5,
         "HEARTBEAT_INTERVAL": 30,
+        "BACKEND_URL": "",              # 云端后端地址 (首次启动由用户填写)
+        "INTERNAL_TOKEN": "",           # Yolo↔后端内部通信 token
+        "JWT_TOKEN": "",                # 登录后的 JWT (运行时持久化, 免重复登录)
+        "YOLO_DEVICE": "",              # Yolo 设备: ""=自动, "cpu", "0"=GPU0
+        "YOLO_ENABLED": True,           # 是否启用 Yolo 模块
+        "YOLO_IMGSZ": 480,              # 推理分辨率
+        "FACE_MODEL": "buffalo_l",      # insightface 模型名
+        "FACE_SIM_THRESHOLD": 0.5,      # 人脸识别相似度阈值
+        "MODELS_DIR": "",               # 模型存储目录 (空=自动选择 %APPDATA%/WSN-Gateway/models/ 或 gateway/models/)
     }
 
-    _INT_KEYS = {"EMQX_PORT", "EMQX_KEEPALIVE", "SERIAL_BAUDRATE", "MAC_TIMEOUT_SECONDS", "HEARTBEAT_INTERVAL"}
+    _INT_KEYS = {"EMQX_PORT", "EMQX_KEEPALIVE", "SERIAL_BAUDRATE", "MAC_TIMEOUT_SECONDS", "HEARTBEAT_INTERVAL", "YOLO_IMGSZ"}
+    _FLOAT_KEYS = {"FACE_SIM_THRESHOLD"}
+    _BOOL_KEYS = {"YOLO_ENABLED"}
 
     # 订阅指标名 -> 业务主题后缀 的映射（非用户可配置，保持不变）
     METRIC_TO_TOPIC = {
@@ -65,6 +76,16 @@ class Config:
         for k, v in self._DEFAULTS.items():
             self._values[k] = v
 
+    def _convert_value(self, key, val):
+        """根据键名将字符串值转换为合适的类型 (int/float/bool/str)。"""
+        if key in self._INT_KEYS:
+            return int(val)
+        if key in self._FLOAT_KEYS:
+            return float(val)
+        if key in self._BOOL_KEYS:
+            return str(val).lower() in ("true", "1", "yes")
+        return val
+
     def _load_from_env(self):
         env_map = {
             "EMQX_HOST": "EMQX_HOST",
@@ -78,7 +99,7 @@ class Config:
         for key, env_name in env_map.items():
             val = os.getenv(env_name)
             if val is not None and val != "":
-                self._values[key] = int(val) if key in self._INT_KEYS else val
+                self._values[key] = self._convert_value(key, val)
 
     def _load_from_ini(self):
         ini_path = os.path.join(get_writable_dir(), "gateway.ini")
@@ -90,7 +111,7 @@ class Config:
         for section in cp.sections():
             for key, val in cp.items(section):
                 if key in self._values:
-                    self._values[key] = int(val) if key in self._INT_KEYS else val
+                    self._values[key] = self._convert_value(key, val)
 
     # ---------- 持久化 ----------
     def save_to_file(self, path=None):
@@ -105,6 +126,15 @@ class Config:
         cp.add_section("serial")
         for k in ["SERIAL_PORT", "SERIAL_BAUDRATE"]:
             cp.set("serial", k, str(self._values[k]))
+        cp.add_section("backend")
+        for k in ["BACKEND_URL", "INTERNAL_TOKEN"]:
+            cp.set("backend", k, str(self._values[k]))
+        cp.add_section("auth")
+        for k in ["JWT_TOKEN"]:
+            cp.set("auth", k, str(self._values[k]))
+        cp.add_section("yolo")
+        for k in ["YOLO_DEVICE", "YOLO_ENABLED", "YOLO_IMGSZ", "FACE_MODEL", "FACE_SIM_THRESHOLD", "MODELS_DIR"]:
+            cp.set("yolo", k, str(self._values[k]))
         with open(path, "w", encoding="utf-8") as f:
             cp.write(f)
 
@@ -192,6 +222,82 @@ class Config:
     @HEARTBEAT_INTERVAL.setter
     def HEARTBEAT_INTERVAL(self, v):
         self._values["HEARTBEAT_INTERVAL"] = int(v)
+
+    @property
+    def BACKEND_URL(self):
+        return self._values["BACKEND_URL"]
+
+    @BACKEND_URL.setter
+    def BACKEND_URL(self, v):
+        self._values["BACKEND_URL"] = str(v) if v else ""
+
+    @property
+    def INTERNAL_TOKEN(self):
+        return self._values["INTERNAL_TOKEN"]
+
+    @INTERNAL_TOKEN.setter
+    def INTERNAL_TOKEN(self, v):
+        self._values["INTERNAL_TOKEN"] = str(v) if v else ""
+
+    @property
+    def JWT_TOKEN(self):
+        return self._values["JWT_TOKEN"]
+
+    @JWT_TOKEN.setter
+    def JWT_TOKEN(self, v):
+        self._values["JWT_TOKEN"] = str(v) if v else ""
+
+    @property
+    def YOLO_DEVICE(self):
+        return self._values["YOLO_DEVICE"]
+
+    @YOLO_DEVICE.setter
+    def YOLO_DEVICE(self, v):
+        self._values["YOLO_DEVICE"] = str(v) if v else ""
+
+    @property
+    def YOLO_ENABLED(self):
+        return self._values["YOLO_ENABLED"]
+
+    @YOLO_ENABLED.setter
+    def YOLO_ENABLED(self, v):
+        self._values["YOLO_ENABLED"] = bool(v)
+
+    @property
+    def YOLO_IMGSZ(self):
+        return self._values["YOLO_IMGSZ"]
+
+    @YOLO_IMGSZ.setter
+    def YOLO_IMGSZ(self, v):
+        self._values["YOLO_IMGSZ"] = int(v)
+
+    @property
+    def FACE_MODEL(self):
+        return self._values["FACE_MODEL"]
+
+    @FACE_MODEL.setter
+    def FACE_MODEL(self, v):
+        self._values["FACE_MODEL"] = str(v) if v else ""
+
+    @property
+    def FACE_SIM_THRESHOLD(self):
+        return self._values["FACE_SIM_THRESHOLD"]
+
+    @FACE_SIM_THRESHOLD.setter
+    def FACE_SIM_THRESHOLD(self, v):
+        self._values["FACE_SIM_THRESHOLD"] = float(v)
+
+    @property
+    def MODELS_DIR(self):
+        """模型存储目录：空时自动返回 get_writable_dir()/models/，非空返回用户指定路径。"""
+        val = self._values["MODELS_DIR"]
+        if val:
+            return val
+        return os.path.join(get_writable_dir(), "models")
+
+    @MODELS_DIR.setter
+    def MODELS_DIR(self, v):
+        self._values["MODELS_DIR"] = str(v) if v else ""
 
     def __repr__(self):
         return f"<Config EMQX={self.EMQX_HOST}:{self.EMQX_PORT} serial={self.SERIAL_PORT}@{self.SERIAL_BAUDRATE}>"
