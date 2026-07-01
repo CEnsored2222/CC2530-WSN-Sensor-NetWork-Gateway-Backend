@@ -34,8 +34,19 @@ bp = Blueprint("yolo", __name__)
 
 # ============ 工具函数 ============
 
+def _decode_frame_from_bytes(raw: bytes):
+    """JPEG/PNG 原始字节 → BGR numpy 数组。"""
+    if not raw:
+        return None, "frame 为空"
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return None, "frame 图像解码失败"
+    return frame, None
+
+
 def _decode_frame(frame_str: str):
-    """base64 JPEG → BGR numpy 数组。
+    """base64 JPEG → BGR numpy 数组(向后兼容,旧 JSON 调用方使用)。
 
     接受带 `data:image/jpeg;base64,` 前缀或纯 base64 字符串。
     返回 (frame_bgr, None) 或 (None, error_msg)。
@@ -55,13 +66,36 @@ def _decode_frame(frame_str: str):
         raw = base64.b64decode(s)
     except Exception:
         return None, "frame base64 解码失败"
-    if not raw:
-        return None, "frame 为空"
-    arr = np.frombuffer(raw, dtype=np.uint8)
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if frame is None:
-        return None, "frame 图像解码失败"
-    return frame, None
+    return _decode_frame_from_bytes(raw)
+
+
+def _parse_infer_args():
+    """统一解析推理请求参数,优先 multipart,回退 JSON。
+
+    返回 (frame_bgr, params_dict, err_response)。
+    err_response 为 None 表示解析成功。
+    """
+    # ---- multipart/form-data 优先(省 base64 编解码 + 33% 体积膨胀) ----
+    file = request.files.get("frame")
+    if file is not None:
+        frame, err = _decode_frame_from_bytes(file.read())
+        if err:
+            return None, None, (jsonify({"error": "invalid frame", "detail": err}), 400)
+        params = {}
+        for key in ("conf", "iou", "classes", "user_id"):
+            val = request.form.get(key)
+            if val is not None:
+                params[key] = val
+        _coerce_num(params)
+        return frame, params, None
+
+    # ---- 回退 JSON + base64(向后兼容 /api/face/embed 等) ----
+    data = request.get_json(silent=True) or {}
+    frame, err = _decode_frame(data.get("frame", ""))
+    if err:
+        return None, None, (jsonify({"error": "invalid frame", "detail": err}), 400)
+    params = {k: data.get(k) for k in ("conf", "iou", "classes", "user_id")}
+    return frame, params, None
 
 
 def _parse_classes(classes_str: str):
@@ -78,6 +112,18 @@ def _parse_classes(classes_str: str):
         except ValueError:
             continue
     return out or None
+
+
+def _coerce_num(params: dict):
+    """将 multipart 表单中的字符串数值字段转 float(ultralytics 要求 float 非 str)。"""
+    for key in ("conf", "iou"):
+        val = params.get(key)
+        if val is None:
+            continue
+        try:
+            params[key] = float(val)
+        except (TypeError, ValueError):
+            params.pop(key, None)
 
 
 def _check_internal_token():
@@ -136,20 +182,20 @@ def detect():
 
     性能优化:不再返回 annotated 标注图,仅返回 detections 框坐标,
     前端 canvas 本地绘制(省去 JPEG 编解码 + base64 往返 ~20-40ms/帧)。
+    传输优化:支持 multipart/form-data 直传 JPEG 原始字节,省 base64 编解码。
     """
     state = _model_state()
     det = state["detector"]
     if not det:
         return jsonify({"error": "model not ready"}), 503
 
-    data = request.get_json(silent=True) or {}
-    frame, err = _decode_frame(data.get("frame", ""))
-    if err:
-        return jsonify({"error": "invalid frame", "detail": err}), 400
+    frame, params, err_resp = _parse_infer_args()
+    if err_resp:
+        return err_resp
 
-    conf = data.get("conf")
-    iou = data.get("iou")
-    classes = _parse_classes(data.get("classes", ""))
+    conf = params.get("conf")
+    iou = params.get("iou")
+    classes = _parse_classes(params.get("classes", ""))
 
     try:
         detections = det.detect(frame, conf=conf, iou=iou, classes=classes)
@@ -164,19 +210,21 @@ def detect():
 
 @bp.post("/api/recognize")
 def recognize():
-    """人脸识别(前端直连,不鉴权;内部拉 face_library)。"""
+    """人脸识别(前端直连,不鉴权;内部拉 face_library)。
+
+    传输优化:支持 multipart/form-data 直传 JPEG 原始字节,省 base64 编解码。
+    """
     state = _model_state()
     rec = state["recognizer"]
     store = state["face_store"]
     if not rec or not store:
         return jsonify({"error": "model not ready"}), 503
 
-    data = request.get_json(silent=True) or {}
-    frame, err = _decode_frame(data.get("frame", ""))
-    if err:
-        return jsonify({"error": "invalid frame", "detail": err}), 400
+    frame, params, err_resp = _parse_infer_args()
+    if err_resp:
+        return err_resp
 
-    user_id = data.get("user_id")
+    user_id = params.get("user_id")
     try:
         user_id = int(user_id)
     except (TypeError, ValueError):

@@ -47,6 +47,23 @@ export const health = () => yolo.get('/health')
 
 export const modelInfo = () => yolo.get('/api/model_info')
 
-export const detectFrame = (data) => yolo.post('/api/detect', data)
+// 推理请求改用 multipart/form-data 直传 JPEG Blob,
+// 省去 base64 编解码(前端 ~3-8ms + 后端 ~2ms)及 ~33% 传输体积膨胀
+const buildFormData = (blob, params = {}) => {
+  const fd = new FormData()
+  fd.append('frame', blob, 'frame.jpg')
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) fd.append(k, v)
+  }
+  return fd
+}
 
-export const recognizeFrame = (data) => yolo.post('/api/recognize', data)
+export const detectFrame = (blob, params = {}) =>
+  yolo.post('/api/detect', buildFormData(blob, params), {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+
+export const recognizeFrame = (blob, params = {}) =>
+  yolo.post('/api/recognize', buildFormData(blob, params), {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })

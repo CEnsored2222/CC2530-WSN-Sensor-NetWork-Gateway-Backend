@@ -67,6 +67,6 @@ class Config:
 
     # ============ 视觉模块 ============
     # 本地 Yolo 服务公网地址(下发给前端直连,见设计文档第 6.5 节)
-    YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "https://frp-act.com:38438")
+    YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://frp-act.com:38438")
     # Yolo↔后端内部通信共享密钥(两端必须一致)
     VISION_INTERNAL_TOKEN = os.getenv("VISION_INTERNAL_TOKEN", "zheshiyigetoken")

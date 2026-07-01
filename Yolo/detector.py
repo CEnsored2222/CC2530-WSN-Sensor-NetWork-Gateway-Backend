@@ -167,18 +167,20 @@ class Detector:
         if boxes is None or len(boxes) == 0:
             return detections
 
-        # 遍历每个检测框
-        for i in range(len(boxes)):
-            cls_id = int(boxes.cls[i].item())
-            conf_val = float(boxes.conf[i].item())
-            x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-            cls_name = self.names.get(cls_id, str(cls_id))
-            detections.append({
-                "class": cls_name,
-                "class_id": cls_id,
-                "confidence": round(conf_val, 4),
-                "bbox": [int(x1), int(y1), int(x2), int(y2)],
-            })
+        # 矢量化解析:一次 .cpu().numpy() 取全部,避免逐框 .item()/.tolist() 往返
+        cls_arr = boxes.cls.cpu().numpy()
+        conf_arr = boxes.conf.cpu().numpy()
+        xyxy_arr = boxes.xyxy.cpu().numpy()
+
+        detections = [
+            {
+                "class": self.names.get(int(c), str(int(c))),
+                "class_id": int(c),
+                "confidence": round(float(cf), 4),
+                "bbox": [int(xy[0]), int(xy[1]), int(xy[2]), int(xy[3])],
+            }
+            for c, cf, xy in zip(cls_arr, conf_arr, xyxy_arr)
+        ]
 
         return detections
 

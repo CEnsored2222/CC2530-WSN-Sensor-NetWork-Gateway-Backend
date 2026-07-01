@@ -13,6 +13,8 @@
 """
 
 import os
+os.environ['OMP_NUM_THREADS'] = str(os.cpu_count() or 4)
+os.environ['OPENBLAS_NUM_THREADS'] = str(os.cpu_count() or 4)
 import sys
 
 # 将 torch 自带的 CUDA 运行时库(cuBLAS/cuDNN)加入 PATH,

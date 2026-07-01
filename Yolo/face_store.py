@@ -31,8 +31,12 @@ class FaceStore:
         self._backend = Config.BACKEND_URL
         self._token = Config.INTERNAL_TOKEN
 
-    def _fetch(self, user_id: int) -> list:
-        """从后端拉取指定用户的人脸库,返回 [{name, embedding:np.ndarray}]。"""
+    def _fetch(self, user_id: int):
+        """从后端拉取人脸库,返回 {entries, matrix}。
+
+        entries: [{name, embedding:np.ndarray}]
+        matrix: (M, 512) 已 L2 归一化的 np.ndarray
+        """
         url = f"{self._backend}/api/vision/internal/faces"
         resp = requests.get(
             url,
@@ -42,8 +46,8 @@ class FaceStore:
         )
         resp.raise_for_status()
         payload = resp.json()
-        # 后端返回 [{name, embedding:<base64 float32 串>}, ...]
         library = []
+        emb_list = []
         for item in payload:
             emb_b64 = item.get("embedding")
             if not emb_b64:
@@ -51,15 +55,25 @@ class FaceStore:
             emb_bytes = base64.b64decode(emb_b64)
             emb = np.frombuffer(emb_bytes, dtype=np.float32)
             library.append({"name": item.get("name"), "embedding": emb})
-        return library
+            emb_list.append(emb)
 
-    def get(self, user_id: int) -> list:
-        """获取指定用户的人脸库(带 TTL 缓存)。
+        # 预构建 (M, 512) 矩阵, L2 归一化
+        if emb_list:
+            matrix = np.stack(emb_list, axis=0)
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            matrix = matrix / np.maximum(norms, 1e-12)
+        else:
+            matrix = np.empty((0, 512), dtype=np.float32)
+
+        return {"entries": library, "matrix": matrix}
+
+    def get(self, user_id: int):
+        """获取人脸库(带 TTL 缓存)。
 
         Returns:
-            list[{name, embedding:np.ndarray}]
+            dict: {"entries": [{name, embedding}], "matrix": (M,512) np.ndarray}
         Raises:
-            requests.RequestException: 后端不可达时
+            requests.RequestException
         """
         now = time.time()
         with self._lock:

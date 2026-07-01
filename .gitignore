@@ -8,6 +8,7 @@ build/
 *.egg
 .eggs/
 .pytest_cache/
+yolo26n_openvino_model/
 
 # Virtual environments
 venv/
@@ -87,6 +88,7 @@ gateway/*.spec
 *.tmp
 *.bak
 *.swp
+kernel.errors.txt
 
 # YOLO model weights
 *.pt

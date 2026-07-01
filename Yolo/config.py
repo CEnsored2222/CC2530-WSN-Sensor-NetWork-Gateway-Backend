@@ -39,16 +39,18 @@ class Config:
     # 留空则不使用 OpenVINO,除非 FORCE_OPENVINO=True 时首次自动导出。
     OPENVINO_MODEL = ""
     # True=首次启动时若未找到 OpenVINO 模型,自动从 .pt 导出(需联网下载依赖)
-    FORCE_OPENVINO = False
+    FORCE_OPENVINO = True
 
     # ============ insightface 人脸识别 ============
-    FACE_MODEL = "buffalo_l"
-    FACE_DET_SIZE = 480
+    # buffalo_s: 轻量模型,CPU 上 ~100-200ms/帧,推荐日常使用
+    # buffalo_l: 重量模型,CPU 上 ~1-3s/帧,仅 GPU 场景推荐
+    FACE_MODEL = "buffalo_s"
+    FACE_DET_SIZE = 320  # 240=极速(推荐), 320=均衡, 480=高精度
     FACE_SIM_THRESHOLD = 0.5
 
     # ============ 服务与通信(★ 部署时必填) ============
     PORT = 6001
-    HOST = "0.0.0.0"
+    HOST = "127.0.0.1"
     BACKEND_URL = "http://127.0.0.1:5000"  # 改为云端 Atmos 后端地址
     INTERNAL_TOKEN = "zheshiyigetoken"     # 与云端 .env 的 VISION_INTERNAL_TOKEN 保持一致
 

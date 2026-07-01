@@ -17,6 +17,16 @@ const conf = ref(0.35)                  // 检测置信度阈值
 const fps = ref(0)
 const detections = ref([])              // 检测结果
 const faces = ref([])                   // 识别结果
+
+// 类别配色板(与 Ultralytics 风格一致,不同类别不同颜色)
+const CLASS_COLORS = [
+  '#FF3838', '#FF9D97', '#FF701F', '#FFB21D', '#CFD23B',
+  '#37F47C', '#6AE2C7', '#51A9FF', '#A1C6FF', '#FFB6C1',
+  '#FFA07A', '#FF7F50', '#FFD700', '#ADFF2F', '#7FFFD4',
+  '#87CEEB', '#DDA0DD', '#FF69B4', '#FF1493', '#F2F6FC',
+]
+
+const INFER_MAX = 480                   // YOLO 推理分辨率,抓帧时等比缩放到此尺寸
 const errorMsg = ref('')                // 最近一次错误
 const faceLibrary = ref([])             // 当前用户人脸库
 const faceDialogVisible = ref(false)    // 人脸库管理弹窗
@@ -31,6 +41,8 @@ const drawCanvasRef = ref(null)         // 用于绘制标注(显示)
 let stream = null
 let frameTimer = null
 let frameTimes = []                     // 最近 30 帧耗时(ms)
+let lastVideoTime = -1                  // 上一帧 video.currentTime,用于跳过重复帧
+let inferInflight = false               // 是否有推理请求在途(跳帧解耦用)
 
 // ============ 计算属性 ============
 const userId = computed(() => userStore.user?.id)
@@ -116,6 +128,7 @@ function stopCamera() {
   detections.value = []
   faces.value = []
   fps.value = 0
+  lastVideoTime = -1
   // 清空绘制画布
   if (drawCanvasRef.value) {
     const ctx = drawCanvasRef.value.getContext('2d')
@@ -125,7 +138,8 @@ function stopCamera() {
 
 function loop() {
   if (!running.value) return
-  frameTimer = setTimeout(captureAndInfer, 100)
+  // 33ms 节流(≈30FPS 上限),保证抓帧+本地绘制流畅(不等待推理返回)
+  frameTimer = setTimeout(captureAndInfer, 33)
 }
 
 async function captureAndInfer() {
@@ -137,25 +151,45 @@ async function captureAndInfer() {
     return
   }
 
-  const t0 = performance.now()
-
-  // 抓帧到隐藏 canvas → JPEG base64
-  const w = video.videoWidth || 640
-  const h = video.videoHeight || 480
-  captureCanvas.width = w
-  captureCanvas.height = h
+  // 抓帧:等比缩放到推理分辨率 IMGSZ(480),减少 base64 传输量
+  const videoW = video.videoWidth || 640
+  const videoH = video.videoHeight || 480
+  // 跳过重复帧(video.currentTime 精度足够区分帧)
+  if (video.currentTime === lastVideoTime) { loop(); return }
+  lastVideoTime = video.currentTime
+  const scale = INFER_MAX / Math.max(videoW, videoH)
+  const w = Math.round(videoW * scale)
+  const h = Math.round(videoH * scale)
+  // 尺寸未变时跳过 canvas 重分配,避免 GPU 缓冲区反复申请
+  if (captureCanvas.width !== w) captureCanvas.width = w
+  if (captureCanvas.height !== h) captureCanvas.height = h
   const capCtx = captureCanvas.getContext('2d')
   capCtx.drawImage(video, 0, 0, w, h)
-  const frame = captureCanvas.toDataURL('image/jpeg', 0.8)
 
+  // 先用上一帧结果本地绘制,保证画面流畅(不阻塞等推理返回)
+  if (mode.value === 'detect') {
+    drawDetectionsLocally(detections.value, w, h)
+  } else {
+    drawFacesLocally(faces.value, w, h)
+  }
+
+  // 上一帧推理未完成则跳过本次推理,避免请求堆积(渲染与推理解耦)
+  if (inferInflight) { loop(); return }
+  inferInflight = true
+
+  const t0 = performance.now()
+  // toBlob 直接输出 JPEG 原始字节,省去 toDataURL 的 base64 编码(膨胀 33%)
+  const blob = await new Promise((resolve) =>
+    captureCanvas.toBlob(resolve, 'image/jpeg', 0.5)
+  )
   try {
     let result
     if (mode.value === 'detect') {
-      result = await detectFrame({ frame, conf: conf.value })
+      result = await detectFrame(blob, { conf: conf.value })
       detections.value = result.detections || []
       faces.value = []
-      // 绘制 Yolo 返回的标注图
-      drawAnnotated(result.annotated, w, h)
+      // 前端本地绘制:仅传检测框坐标,减少 annotated 图片传输
+      drawDetectionsLocally(detections.value, w, h)
     } else {
       // 人脸识别模式:user_id 从 user store 解出
       if (!userId.value) {
@@ -163,14 +197,14 @@ async function captureAndInfer() {
         stopCamera()
         return
       }
-      result = await recognizeFrame({ frame, user_id: userId.value })
+      result = await recognizeFrame(blob, { user_id: userId.value })
       faces.value = result.faces || []
       detections.value = []
-      // 人脸识别无标注图,本地绘制 bbox + name
-      drawFacesLocally(faces.value, w, h, video)
+      // 人脸识别:本地绘制 bbox + name(坐标镜像对齐用户所见画面)
+      drawFacesLocally(faces.value, w, h)
     }
 
-    // FPS 统计
+    // FPS 统计(基于实际完成推理的帧)
     const dt = performance.now() - t0
     frameTimes.push(dt)
     if (frameTimes.length > 30) frameTimes.shift()
@@ -184,52 +218,80 @@ async function captureAndInfer() {
       stopCamera()
     }
   } finally {
+    inferInflight = false
     loop()
   }
 }
 
-// 绘制 Yolo 返回的标注图(data:image/jpeg;base64,...)
-function drawAnnotated(annotatedB64, w, h) {
+// 目标检测模式:在 overlay canvas 上绘制 bbox + class + confidence(前端本地绘制)
+// 坐标镜像:YOLO 收到的是原始未镜像帧,用户看到的是 CSS scaleX(-1) 镜像帧,
+// 故需手动翻转 x 坐标(x_new = w - x_old)使框对齐用户所见画面。
+// canvas 本身不做 CSS 镜像,文字保持正向可读。
+function drawDetectionsLocally(detList, w, h) {
   const canvas = drawCanvasRef.value
   if (!canvas) return
-  canvas.width = w
-  canvas.height = h
+  if (canvas.width !== w) canvas.width = w
+  if (canvas.height !== h) canvas.height = h
   const ctx = canvas.getContext('2d')
-  if (!annotatedB64) {
-    ctx.clearRect(0, 0, w, h)
-    return
-  }
-  const img = new Image()
-  img.onload = () => {
-    ctx.drawImage(img, 0, 0, w, h)
-  }
-  img.src = annotatedB64
+  ctx.clearRect(0, 0, w, h)
+  detList.forEach((d) => {
+    const [x1o, y1, x2o, y2] = d.bbox
+    // x 坐标镜像
+    const x1 = w - x2o
+    const x2 = w - x1o
+    const color = CLASS_COLORS[d.class_id % CLASS_COLORS.length]
+    // 框
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+    // 标签
+    const label = `${d.class} ${(d.confidence * 100).toFixed(0)}%`
+    ctx.font = 'bold 14px IBM Plex Sans, sans-serif'
+    const tw = ctx.measureText(label).width + 10
+    const th = 18
+    // 溢出修复:标签右边界不超出画布,顶部不超出画布
+    const labelX = Math.min(x1, w - tw)
+    const labelY = Math.max(y1 - th, 0)
+    ctx.fillStyle = color
+    ctx.globalAlpha = 0.85
+    ctx.fillRect(labelX, labelY, tw, th)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = '#0b1020'
+    ctx.fillText(label, labelX + 5, labelY + 14)
+  })
 }
 
-// 人脸识别模式:在 video 当前帧上绘制 bbox + name + similarity
-function drawFacesLocally(faceList, w, h, video) {
+// 人脸识别模式:在 overlay canvas 上绘制 bbox + name + similarity(前端本地绘制)
+// 坐标镜像逻辑与检测模式相同
+function drawFacesLocally(faceList, w, h) {
   const canvas = drawCanvasRef.value
   if (!canvas) return
-  canvas.width = w
-  canvas.height = h
+  if (canvas.width !== w) canvas.width = w
+  if (canvas.height !== h) canvas.height = h
   const ctx = canvas.getContext('2d')
-  // 先绘制 video 当前帧
-  ctx.drawImage(video, 0, 0, w, h)
-  // 绘制每个人脸框
+  ctx.clearRect(0, 0, w, h)
   faceList.forEach((f) => {
-    const [x1, y1, x2, y2] = f.bbox
+    const [x1o, y1, x2o, y2] = f.bbox
+    // x 坐标镜像
+    const x1 = w - x2o
+    const x2 = w - x1o
     const known = !!f.name
-    ctx.strokeStyle = known ? '#4dd6c1' : '#ef6b7e'
+    const color = known ? '#34d399' : '#f87171'
+    ctx.strokeStyle = color
     ctx.lineWidth = 3
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
     // 标签背景
     const label = known ? `${f.name} ${(f.similarity * 100).toFixed(0)}%` : '未识别'
     ctx.font = 'bold 16px IBM Plex Sans, sans-serif'
     const tw = ctx.measureText(label).width + 12
-    ctx.fillStyle = known ? 'rgba(77, 214, 193, 0.9)' : 'rgba(239, 107, 126, 0.9)'
-    ctx.fillRect(x1, Math.max(y1 - 24, 0), tw, 22)
+    const th = 22
+    // 溢出修复
+    const labelX = Math.min(x1, w - tw)
+    const labelY = Math.max(y1 - th, 0)
+    ctx.fillStyle = known ? 'rgba(52, 211, 153, 0.9)' : 'rgba(248, 113, 113, 0.9)'
+    ctx.fillRect(labelX, labelY, tw, th)
     ctx.fillStyle = '#0b1020'
-    ctx.fillText(label, x1 + 6, Math.max(y1 - 8, 14))
+    ctx.fillText(label, labelX + 6, labelY + 16)
   })
 }
 
@@ -269,12 +331,15 @@ async function captureRegister() {
   try {
     const video = videoRef.value
     const captureCanvas = canvasRef.value
-    const w = video.videoWidth || 640
-    const h = video.videoHeight || 480
-    captureCanvas.width = w
-    captureCanvas.height = h
-    captureCanvas.getContext('2d').drawImage(video, 0, 0, w, h)
-    const frame = captureCanvas.toDataURL('image/jpeg', 0.8)
+    const videoW = video.videoWidth || 640
+    const videoH = video.videoHeight || 480
+    const scale = INFER_MAX / Math.max(videoW, videoH)
+    const capW = Math.round(videoW * scale)
+    const capH = Math.round(videoH * scale)
+    if (captureCanvas.width !== capW) captureCanvas.width = capW
+    if (captureCanvas.height !== capH) captureCanvas.height = capH
+    captureCanvas.getContext('2d').drawImage(video, 0, 0, capW, capH)
+    const frame = captureCanvas.toDataURL('image/jpeg', 0.5)
 
     const res = await addFace({ frame, name: registerName.value.trim() })
     faceLibrary.value.unshift(res)
@@ -777,9 +842,7 @@ function fmtTime(s) {
   z-index: 1;
   transform: scaleX(-1); /* 镜像,符合直觉 */
 }
-.video-wrap .overlay {
-  transform: scaleX(-1);
-}
+/* overlay canvas 不做 CSS 镜像,由 JS 层面手动翻转 x 坐标,保持文字正向可读 */
 .hidden-canvas {
   display: none;
 }
