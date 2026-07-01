@@ -88,5 +88,6 @@ def create_app() -> Flask:
 if __name__ == "__main__":
     app = create_app()
     print(f"[Yolo] 服务启动: http://{Config.HOST}:{Config.PORT}")
-    # 前端直连不鉴权,需监听公网;threaded=True 支持并发逐帧请求
-    app.run(host=Config.HOST, port=Config.PORT, threaded=True)
+    # 用 waitress 替代 Flask dev server(Werkzeug 在 Windows 上 HTTP 性能极差)
+    from waitress import serve
+    serve(app, host=Config.HOST, port=Config.PORT, threads=4)

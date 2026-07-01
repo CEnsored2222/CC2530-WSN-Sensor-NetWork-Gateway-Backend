@@ -11,6 +11,16 @@
     如需强制指定:
         DEVICE = "cpu"   强制 CPU(集显机器若自动检测异常时用)
         DEVICE = "0"      强制 GPU 0(独显机器)
+
+CPU 优化说明(网关集成场景):
+    1. OPENVINO_MODEL: 指定 OpenVINO 导出模型目录路径。若设置且目录存在,
+       Detector 会加载 OpenVINO 模型而非 PyTorch .pt,CPU 推理可提速 2-3 倍。
+       导出方法: model.export(format="openvino", imgsz=480)
+    2. IMGSZ: 降低推理分辨率可大幅提升 CPU 速度。480 对日常检测足够,
+       320 适合极端低延迟场景(精度略降)。640 为标准值。
+    3. HALF: GPU 时启用 FP16 加速;CPU 时自动忽略(CPU 无 FP16 硬件单元)。
+    4. 运行时自动导出: 若 OPENVINO_MODEL 留空但 FORCE_OPENVINO=True,
+       首次启动时自动导出 OpenVINO 模型到 weights 同级目录。
 """
 
 
@@ -18,10 +28,18 @@ class Config:
     # ============ YOLO26 目标检测 ============
     WEIGHTS = "yolo26n.pt"
     DEVICE = ""             # 空=自动检测(独显GPU/集显CPU);"cpu"=强制CPU;"0"=GPU0
-    IMGSZ = 640
+    IMGSZ = 480             # 推理分辨率(480 兼顾速度与精度;320 极速;640 标准)
     CONF_THRES = 0.35
     IOU_THRES = 0.45
     END2END = True
+    HALF = False            # FP16 在新版 ultralytics 已弃用且对 yolo26n 无提速,关闭
+
+    # =========OpenVINO 加速(CPU 场景) ============
+    # 指定 OpenVINO 导出模型目录(如 "yolo26n_openvino_model/")。
+    # 留空则不使用 OpenVINO,除非 FORCE_OPENVINO=True 时首次自动导出。
+    OPENVINO_MODEL = ""
+    # True=首次启动时若未找到 OpenVINO 模型,自动从 .pt 导出(需联网下载依赖)
+    FORCE_OPENVINO = False
 
     # ============ insightface 人脸识别 ============
     FACE_MODEL = "buffalo_l"

@@ -11,6 +11,14 @@ import PageHeader from '@/components/layout/PageHeader.vue'
 const userStore = useUserStore()
 const ui = useUiStore()
 
+// 类别配色板(与 Ultralytics res.plot() 风格一致,不同类别不同颜色)
+const CLASS_COLORS = [
+  '#FF3838', '#FF9D97', '#FF701F', '#FFB21D', '#CFD23B',
+  '#37F47C', '#6AE2C7', '#51A9FF', '#A1C6FF', '#FFB6C1',
+  '#FFA07A', '#FF7F50', '#FFD700', '#ADFF2F', '#7FFFD4',
+  '#87CEEB', '#DDA0DD', '#FF69B4', '#FF1493', '#F2F6FC',
+]
+
 const mode = ref('detect')
 const running = ref(false)
 const yoloReady = ref(false)
@@ -121,7 +129,8 @@ function stopCamera() {
 
 function loop() {
   if (!running.value) return
-  frameTimer = setTimeout(captureAndInfer, 100)
+  // 移除 100ms 固定节流:推理完成后立即抓下一帧,由推理耗时自然限速
+  frameTimer = setTimeout(captureAndInfer, 0)
 }
 
 async function captureAndInfer() {
@@ -146,10 +155,11 @@ async function captureAndInfer() {
   try {
     let result
     if (mode.value === 'detect') {
+      // 性能优化:仅传检测框坐标,前端本地绘制(不再传 annotated 标注图)
       result = await detectFrame({ frame, conf: conf.value })
       detections.value = result.detections || []
       faces.value = []
-      drawAnnotated(result.annotated, w, h)
+      drawDetectionsLocally(detections.value, w, h)
     } else {
       if (!userId.value) {
         ui.pushToast({ type: 'warning', title: '用户信息缺失,无法识别人脸' })
@@ -159,7 +169,7 @@ async function captureAndInfer() {
       result = await recognizeFrame({ frame, user_id: userId.value })
       faces.value = result.faces || []
       detections.value = []
-      drawFacesLocally(faces.value, w, h, video)
+      drawFacesLocally(faces.value, w, h)
     }
 
     const dt = performance.now() - t0
@@ -178,43 +188,71 @@ async function captureAndInfer() {
   }
 }
 
-function drawAnnotated(annotatedB64, w, h) {
+// 目标检测模式:在 video 当前帧上绘制 bbox + class + confidence(本地绘制)
+// 坐标镜像:YOLO 收到的是原始未镜像帧,用户看到的是 CSS scaleX(-1) 镜像帧,
+// 故需手动翻转 x 坐标(x_new = w - x_old)使框对齐用户所见画面。
+// canvas 本身不做 CSS 镜像,文字保持正向可读。
+function drawDetectionsLocally(detList, w, h) {
   const canvas = drawCanvasRef.value
   if (!canvas) return
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
-  if (!annotatedB64) {
-    ctx.clearRect(0, 0, w, h)
-    return
-  }
-  const img = new Image()
-  img.onload = () => {
-    ctx.drawImage(img, 0, 0, w, h)
-  }
-  img.src = annotatedB64
+  ctx.clearRect(0, 0, w, h)
+  detList.forEach((d) => {
+    const [x1o, y1, x2o, y2] = d.bbox
+    // x 坐标镜像
+    const x1 = w - x2o
+    const x2 = w - x1o
+    const color = CLASS_COLORS[d.class_id % CLASS_COLORS.length]
+    // 框
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+    // 标签
+    const label = `${d.class} ${(d.confidence * 100).toFixed(0)}%`
+    ctx.font = 'bold 14px JetBrains Mono, monospace'
+    const tw = ctx.measureText(label).width + 10
+    const th = 18
+    // 溢出修复:标签右边界不超出画布,顶部不超出画布
+    const labelX = Math.min(x1, w - tw)
+    const labelY = Math.max(y1 - th, 0)
+    ctx.fillStyle = color
+    ctx.globalAlpha = 0.85
+    ctx.fillRect(labelX, labelY, tw, th)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = '#0b1020'
+    ctx.fillText(label, labelX + 5, labelY + 14)
+  })
 }
 
-function drawFacesLocally(faceList, w, h, video) {
+function drawFacesLocally(faceList, w, h) {
   const canvas = drawCanvasRef.value
   if (!canvas) return
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
-  ctx.drawImage(video, 0, 0, w, h)
+  ctx.clearRect(0, 0, w, h)
   faceList.forEach((f) => {
-    const [x1, y1, x2, y2] = f.bbox
+    const [x1o, y1, x2o, y2] = f.bbox
+    // x 坐标镜像(与检测模式同理)
+    const x1 = w - x2o
+    const x2 = w - x1o
     const known = !!f.name
-    ctx.strokeStyle = known ? '#34d399' : '#f87171'
+    const color = known ? '#34d399' : '#f87171'
+    ctx.strokeStyle = color
     ctx.lineWidth = 3
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
     const label = known ? `${f.name} ${(f.similarity * 100).toFixed(0)}%` : '未识别'
     ctx.font = 'bold 16px JetBrains Mono, monospace'
     const tw = ctx.measureText(label).width + 12
+    const th = 22
+    const labelX = Math.min(x1, w - tw)
+    const labelY = Math.max(y1 - th, 0)
     ctx.fillStyle = known ? 'rgba(52, 211, 153, 0.9)' : 'rgba(248, 113, 113, 0.9)'
-    ctx.fillRect(x1, Math.max(y1 - 24, 0), tw, 22)
+    ctx.fillRect(labelX, labelY, tw, th)
     ctx.fillStyle = '#0b1020'
-    ctx.fillText(label, x1 + 6, Math.max(y1 - 8, 14))
+    ctx.fillText(label, labelX + 6, labelY + 16)
   })
 }
 
@@ -795,9 +833,6 @@ function fmtTime(s) {
   z-index: 1;
   transform: scaleX(-1);
 }
-.video-wrap .overlay {
-  transform: scaleX(-1);
-}
 .hidden-canvas {
   display: none;
 }
@@ -833,7 +868,8 @@ function fmtTime(s) {
   list-style: none;
   padding: 0;
   margin: 0;
-  max-height: 180px;
+  /* 固定高度避免检测结果数量变化时卡片跳动 */
+  height: 180px;
   overflow-y: auto;
 }
 .result-item {

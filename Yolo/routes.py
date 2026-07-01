@@ -8,6 +8,11 @@
     POST /api/recognize            人脸识别(前端直连,不鉴权;内部拉人脸库)
     POST /api/face/embed           人脸特征提取(后端注册时调用,需 INTERNAL_TOKEN)
 
+性能优化:
+    /api/detect 不再返回 annotated 标注图(省去服务端 res.plot() + JPEG 编码 +
+    base64 编码 + 前端 Image 解码往返),仅返回 detections 框坐标,
+    由前端 canvas 本地绘制(与人脸识别模式一致)。
+
 设计文档第 4.5 节错误处理:
     frame 缺失/解码失败 → 400 {"error":"invalid frame"}
     模型未加载 → 503 {"error":"model not ready"}
@@ -16,7 +21,6 @@
 """
 
 import base64
-import io
 
 import cv2
 import numpy as np
@@ -108,6 +112,7 @@ def health():
         "device": det.device_repr if det else "n/a",
         "yolo_model": det.weights if det else Config.WEIGHTS,
         "face_model": Config.FACE_MODEL,
+        "imgsz": det.imgsz if det else Config.IMGSZ,
     })
 
 
@@ -127,7 +132,11 @@ def model_info():
 
 @bp.post("/api/detect")
 def detect():
-    """目标检测(前端直连,不鉴权)。"""
+    """目标检测(前端直连,不鉴权)。
+
+    性能优化:不再返回 annotated 标注图,仅返回 detections 框坐标,
+    前端 canvas 本地绘制(省去 JPEG 编解码 + base64 往返 ~20-40ms/帧)。
+    """
     state = _model_state()
     det = state["detector"]
     if not det:
@@ -143,14 +152,12 @@ def detect():
     classes = _parse_classes(data.get("classes", ""))
 
     try:
-        detections, annotated = det.detect(frame, conf=conf, iou=iou, classes=classes)
+        detections = det.detect(frame, conf=conf, iou=iou, classes=classes)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    from detector import encode_image_b64
     return jsonify({
         "detections": detections,
-        "annotated": encode_image_b64(annotated),
         "count": len(detections),
     })
 

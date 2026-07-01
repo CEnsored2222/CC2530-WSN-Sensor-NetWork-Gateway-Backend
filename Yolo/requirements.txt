@@ -13,6 +13,7 @@
 
 flask>=3.0
 flask-cors>=4.0.0
+waitress>=3.0            # 生产 WSGI 服务器(Werkzeug dev server 在 Windows 上 HTTP 性能极差)
 ultralytics>=8.3.0
 insightface>=0.7.3
 onnxruntime-gpu>=1.20.0,<1.27.0
