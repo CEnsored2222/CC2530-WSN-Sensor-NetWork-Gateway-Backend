@@ -440,7 +440,7 @@ const onlineCount = computed(() => overviewData.value.online_count || 0)
         >
           <div class="device-card-head">
             <div class="device-name-row">
-              <span class="status-dot" :class="d.latest?.device_status === 'sleep' ? 'status-dot--sleep' : 'status-dot--connected'" />
+              <span class="status-dot" :class="isDeviceActive(d.latest?.device_status) ? 'status-dot--connected' : 'status-dot--sleep'" />
               <span class="device-name">{{ d.device.name || d.device.mac || '未命名' }}</span>
             </div>
             <span class="tag-pill">{{ d.metrics.length }} 指标</span>

@@ -59,6 +59,11 @@ class MacRegistry:
         with self._lock:
             return len(self._macs)
 
+    def get_all_macs(self) -> list:
+        """返回当前所有活跃 MAC 列表（用于关机时批量发 sleep）。"""
+        with self._lock:
+            return list(self._macs.keys())
+
     def _check_loop(self):
         """每秒扫描,超时的 MAC 剔除并触发回调。"""
         while self._running:

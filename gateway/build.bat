@@ -6,10 +6,20 @@ echo.
 
 cd /d "%~dp0"
 
+echo [0/5] Checking running instances...
+
+taskkill /f /im WSN-Gateway.exe >nul 2>&1
+if %ERRORLEVEL% EQU 0 echo   Terminated: WSN-Gateway.exe
+
+powershell -NoProfile -Command ^
+  "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object {$_.CommandLine -like '*gui_web.py*'} | ForEach-Object { Write-Host ('  Terminated: python.exe gui_web.py (PID=' + $_.ProcessId + ')'); Stop-Process -Id $_.ProcessId -Force }" 2>nul
+
+echo.
+
 rmdir /s /q build 2>nul
 rmdir /s /q dist 2>nul
 
-echo [1/4] Installing core dependencies (vision deps installed separately)...
+echo [1/5] Installing core dependencies (vision deps installed separately)...
 python -m pip install paho-mqtt pyserial pywebview numpy requests python-socketio pillow
 python -m pip install pyinstaller
 if %ERRORLEVEL% NEQ 0 (
@@ -23,10 +33,10 @@ if %ERRORLEVEL% NEQ 0 (
 echo Core dependencies check done.
 echo.
 echo NOTE: Vision deps (ultralytics/insightface/onnxruntime/opencv) are NOT bundled.
-echo       Run install_vision.bat on target machine to enable Yolo features.
+echo       Embedded Python runtime is bundled for auto-extraction on first use.
 echo.
 
-echo [2/4] Building frontend...
+echo [2/5] Building frontend...
 cd frontend
 call npm install
 if %ERRORLEVEL% NEQ 0 (
@@ -46,7 +56,7 @@ cd ..
 echo Frontend build done.
 echo.
 
-echo [3/4] PyInstaller build (single file)...
+echo [3/5] PyInstaller build (single file)...
 set ICON=--icon "assets/icon.ico"
 python -m PyInstaller -F -w ^
   --name "WSN-Gateway" ^
@@ -59,6 +69,7 @@ python -m PyInstaller -F -w ^
   --add-data "gui_app.html;." ^
   --add-data "frontend\dist;frontend\dist" ^
   --add-data "..\Yolo;Yolo" ^
+  --add-data "python_embed\runtime;python_embed\runtime" ^
   --exclude-module torch ^
   --exclude-module torchvision ^
   --exclude-module ultralytics ^
@@ -79,13 +90,14 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 echo.
-echo [4/4] Build complete!
+echo [4/5] Build complete!
 echo.
 echo ========================================
 echo   Output: dist\WSN-Gateway.exe
 echo ========================================
 echo.
 echo Copy WSN-Gateway.exe to any folder and double-click to run.
-echo gw_uuid.txt and gateway.ini will be auto-generated in %%APPDATA%%\WSN-Gateway\.
+echo gw_uuid.txt and gateway.ini will be auto-generated in the selected DATA_DIR.
+echo Embedded Python runtime will be auto-extracted on first use.
 echo.
 pause

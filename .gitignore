@@ -84,6 +84,9 @@ gateway/dist/
 gateway/build/
 gateway/*.spec
 
+# 内嵌 Python 运行时(体积大,由 PyInstaller --add-data 打包)
+gateway/python_embed/
+
 # Temporary files
 *.tmp
 *.bak

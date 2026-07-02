@@ -160,6 +160,10 @@ class SerialReader:
         if "led" in data:
             self._mqtt.publish_led(mac, data["led"])
 
+        # 已有设备持续上报数据，刷新 active 状态（防止首次 active 消息丢失）
+        if not is_new:
+            self._mqtt.publish_status(mac, "active")
+
     def _handle_feedback(self, data):
         """控制指令反馈:由本地网关解析,成功时直接更新 led/status 主题。
 

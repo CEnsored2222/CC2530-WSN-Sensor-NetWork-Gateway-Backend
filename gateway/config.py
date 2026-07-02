@@ -47,9 +47,11 @@ class Config:
         "YOLO_DEVICE": "",              # Yolo 设备: ""=自动, "cpu", "0"=GPU0
         "YOLO_ENABLED": True,           # 是否启用 Yolo 模块
         "YOLO_IMGSZ": 480,              # 推理分辨率
-        "FACE_MODEL": "buffalo_l",      # insightface 模型名
+        "YOLO_SERVICE_URL": "http://127.0.0.1:6001",  # Yolo HTTP 服务地址 (Web 模式直连, 可随时修改方便调试)
+        "FACE_MODEL": "buffalo_m",      # insightface 模型名(buffalo_m: CPU ~100-200ms, buffalo_l: 仅GPU推荐~1-3s)
         "FACE_SIM_THRESHOLD": 0.5,      # 人脸识别相似度阈值
-        "MODELS_DIR": "",               # 模型存储目录 (空=自动选择 %APPDATA%/WSN-Gateway/models/ 或 gateway/models/)
+        "MODELS_DIR": "",               # 模型存储目录 (空=自动派生为 DATA_DIR 或 %APPDATA%/WSN-Gateway/)
+        "DATA_DIR": "",                 # 数据存储根目录 (用户选择,空=默认 %APPDATA%/WSN-Gateway/)
     }
 
     _INT_KEYS = {"EMQX_PORT", "EMQX_KEEPALIVE", "SERIAL_BAUDRATE", "MAC_TIMEOUT_SECONDS", "HEARTBEAT_INTERVAL", "YOLO_IMGSZ"}
@@ -133,8 +135,11 @@ class Config:
         for k in ["JWT_TOKEN"]:
             cp.set("auth", k, str(self._values[k]))
         cp.add_section("yolo")
-        for k in ["YOLO_DEVICE", "YOLO_ENABLED", "YOLO_IMGSZ", "FACE_MODEL", "FACE_SIM_THRESHOLD", "MODELS_DIR"]:
+        for k in ["YOLO_DEVICE", "YOLO_ENABLED", "YOLO_IMGSZ", "YOLO_SERVICE_URL", "FACE_MODEL", "FACE_SIM_THRESHOLD", "MODELS_DIR"]:
             cp.set("yolo", k, str(self._values[k]))
+        cp.add_section("storage")
+        for k in ["DATA_DIR"]:
+            cp.set("storage", k, str(self._values.get(k, "")))
         with open(path, "w", encoding="utf-8") as f:
             cp.write(f)
 
@@ -272,6 +277,14 @@ class Config:
         self._values["YOLO_IMGSZ"] = int(v)
 
     @property
+    def YOLO_SERVICE_URL(self):
+        return self._values["YOLO_SERVICE_URL"]
+
+    @YOLO_SERVICE_URL.setter
+    def YOLO_SERVICE_URL(self, v):
+        self._values["YOLO_SERVICE_URL"] = str(v) if v else "http://127.0.0.1:6001"
+
+    @property
     def FACE_MODEL(self):
         return self._values["FACE_MODEL"]
 
@@ -289,15 +302,36 @@ class Config:
 
     @property
     def MODELS_DIR(self):
-        """模型存储目录：空时自动返回 get_writable_dir()/models/，非空返回用户指定路径。"""
+        """模型存储基础目录：用户指定 > DATA_DIR（如已设置） > get_writable_dir()。
+
+        注意：模型实际存储在 {基础目录}/models/ 子目录下（由 model_manager.get_models_dir() 统一管理）。
+        """
         val = self._values["MODELS_DIR"]
         if val:
             return val
-        return os.path.join(get_writable_dir(), "models")
+        data_dir = self._values.get("DATA_DIR", "")
+        if data_dir:
+            return data_dir
+        return get_writable_dir()
 
     @MODELS_DIR.setter
     def MODELS_DIR(self, v):
         self._values["MODELS_DIR"] = str(v) if v else ""
+
+    @property
+    def DATA_DIR(self):
+        """数据存储根目录：空时返回 get_writable_dir()（%APPDATA%/WSN-Gateway/）。"""
+        val = self._values.get("DATA_DIR", "")
+        return val if val else get_writable_dir()
+
+    @DATA_DIR.setter
+    def DATA_DIR(self, v):
+        self._values["DATA_DIR"] = str(v) if v else ""
+
+    @property
+    def PYTHON_RUNTIME_DIR(self):
+        """内嵌 Python 运行时目录：DATA_DIR/python_runtime/。"""
+        return os.path.join(self.DATA_DIR, "python_runtime")
 
     def __repr__(self):
         return f"<Config EMQX={self.EMQX_HOST}:{self.EMQX_PORT} serial={self.SERIAL_PORT}@{self.SERIAL_BAUDRATE}>"

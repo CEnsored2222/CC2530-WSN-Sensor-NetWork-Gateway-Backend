@@ -208,6 +208,7 @@ class GatewayMqttClient:
         #   1. 新 MAC 出现 → active(serial_reader._on_new_mac)
         #   2. 5s 内无新数据 → sleep(mac_registry 超时回调)
         #   3. STATUS 控制指令成功反馈 → active/sleep(serial_reader._handle_feedback)
+        #   4. 已有设备数据上报 → active(serial_reader._handle_data, 防止首次消息丢失)
         self._publish_dev(dev_mac, "device_status", "status", status_str)
 
     def publish_heartbeat(self):

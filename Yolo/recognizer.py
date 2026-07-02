@@ -29,13 +29,19 @@ class Recognizer:
         ctx_id = -1  # -1=CPU
         try:
             import onnxruntime as ort
+            providers = ort.get_available_providers()
             # onnxruntime-gpu 可用时优先 GPU
-            if "CUDAExecutionProvider" in ort.get_available_providers():
-                ctx_id = Config.DEVICE or 0
-                if ctx_id == "":
-                    ctx_id = 0
-        except Exception:
-            pass
+            if "CUDAExecutionProvider" in providers:
+                raw = Config.DEVICE or "0"
+                ctx_id = int(raw) if str(raw).strip().isdigit() else 0
+                print(f"[Yolo] Recognizer GPU 已启用: ctx_id={ctx_id}, "
+                      f"providers={providers}")
+            else:
+                print(f"[Yolo] Recognizer 未检测到 CUDA, 使用 CPU 推理。"
+                      f"可用 providers: {providers}")
+                print(f"[Yolo] 如需 GPU 加速请安装 onnxruntime-gpu")
+        except Exception as e:
+            print(f"[Yolo] Recognizer GPU 检测异常, 回退 CPU: {e}")
         if Config.DEVICE and str(Config.DEVICE).lower() == "cpu":
             ctx_id = -1
 

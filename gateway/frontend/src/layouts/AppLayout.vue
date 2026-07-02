@@ -1,32 +1,41 @@
 <script setup>
 import { useRoute } from 'vue-router'
+import { useThemeStore } from '@/stores/theme'
 import FaultyTerminal from '@/components/vuebits/FaultyTerminal.vue'
 import AuroraBackground from '@/components/layout/AuroraBackground.vue'
+import ThemeTransition from '@/components/layout/ThemeTransition.vue'
 import GlassDock from '@/components/glass/GlassDock.vue'
 import GlassTopbar from '@/components/glass/GlassTopbar.vue'
 
 const route = useRoute()
+const themeStore = useThemeStore()
 </script>
 
 <template>
-  <div class="app-bg-terminal">
-    <FaultyTerminal
-      :brightness="0.18"
-      :tint="'#84cc16'"
-      :scanline-intensity="0.2"
-      :glitch-amount="0.5"
-      :noise-amp="0.7"
-      :curvature="0.1"
-      :chromatic-aberration="0"
-      :dither="true"
-      :mouse-react="true"
-      :mouse-strength="0.15"
-      :page-load-animation="true"
-      :time-scale="0.25"
-    />
+  <div class="bg-wrapper">
+    <div class="bg-layer" :class="{ 'bg-layer--active': themeStore.theme === 'dark' }">
+      <FaultyTerminal
+        :pause="themeStore.theme !== 'dark'"
+        :brightness="0.18"
+        :tint="'#84cc16'"
+        :scanline-intensity="0.2"
+        :glitch-amount="0.5"
+        :noise-amp="0.7"
+        :curvature="0.1"
+        :chromatic-aberration="0"
+        :dither="true"
+        :mouse-react="true"
+        :mouse-strength="0.15"
+        :page-load-animation="true"
+        :time-scale="0.25"
+      />
+    </div>
+    <div class="bg-layer" :class="{ 'bg-layer--active': themeStore.theme === 'light' }">
+      <AuroraBackground />
+    </div>
   </div>
 
-  <AuroraBackground />
+  <ThemeTransition />
 
   <GlassTopbar />
 
@@ -42,16 +51,33 @@ const route = useRoute()
 </template>
 
 <style scoped>
-.app-bg-terminal {
+.bg-wrapper {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  overflow: hidden;
 }
-.app-bg-terminal :deep(.faulty-terminal) {
+.bg-layer {
   position: absolute;
   inset: 0;
+  opacity: 0;
+  transition: opacity 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.bg-layer--active {
+  opacity: 1;
+}
+.bg-layer :deep(.faulty-terminal) {
+  position: absolute;
+  inset: 0;
+}
+.bg-layer :deep(.aurora-background),
+.bg-layer :deep(.aurora-background--fixed),
+.bg-layer :deep(.aurora-blob),
+.bg-layer :deep(.aurora-shape),
+.bg-layer :deep(.aurora-line),
+.bg-layer :deep(.aurora-noise-mid),
+.bg-layer :deep(.aurora-grid) {
+  position: absolute !important;
 }
 .app-main {
   position: relative;

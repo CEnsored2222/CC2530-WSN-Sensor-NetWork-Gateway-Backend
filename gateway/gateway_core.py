@@ -32,12 +32,24 @@ def get_or_create_uuid() -> str:
         with open(path, "r", encoding="utf-8") as f:
             uid = f.read().strip()
             if uid:
+                log(f"[Gateway] 从文件加载已有 UUID: {uid}")
+                log(f"[Gateway] UUID 文件位置: {path}")
                 return uid
     uid = str(uuidlib.uuid4())
     with open(path, "w", encoding="utf-8") as f:
         f.write(uid)
     log(f"[Gateway] 生成新网关 UUID: {uid}")
+    log(f"[Gateway] UUID 已保存到: {path}")
     return uid
+
+
+def reset_uuid() -> str:
+    """强制删除旧 UUID 文件并重新生成。用于解决编译后 UUID 不匹配问题。"""
+    path = config.GW_UUID_FILE
+    if os.path.exists(path):
+        os.remove(path)
+        log(f"[Gateway] 已删除旧 UUID 文件: {path}")
+    return get_or_create_uuid()
 
 
 def open_serial():
@@ -174,6 +186,16 @@ class GatewayCore:
         消息控制,网关启停不应影响审批状态。这样重启网关后无需后端重新审批。
         """
         self._business_started.clear()
+
+        # 关机前对全部活跃设备发送 sleep,防止后端保留过期 active 状态
+        if self._mac_registry:
+            for mac in self._mac_registry.get_all_macs():
+                try:
+                    self._mqtt.publish_status(mac, "sleep")
+                except Exception:
+                    pass
+            log(f"[Gateway] 已对 {self._mac_registry.count()} 台设备发布 sleep")
+
         try:
             self._serial_reader.stop()
         except Exception as e:

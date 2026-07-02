@@ -90,6 +90,20 @@ def inject_to_yolo() -> bool:
         setattr(YoloConfig, "BACKEND_URL", gateway_config.BACKEND_URL)
         setattr(YoloConfig, "INTERNAL_TOKEN", gateway_config.INTERNAL_TOKEN)
 
+        # 性能警告：buffalo_l 在 CPU 上约 1-3 秒/帧，仅 1 FPS
+        device = gateway_config.YOLO_DEVICE if gateway_config.YOLO_DEVICE else "auto"
+        if gateway_config.FACE_MODEL == "buffalo_l" and (device == "cpu" or device == "auto"):
+            gpu_ok = False
+            if device == "auto":
+                try:
+                    import torch
+                    gpu_ok = torch.cuda.is_available()
+                except ImportError:
+                    pass
+            if not gpu_ok:
+                print("[yolo_config] ⚠ 警告: FACE_MODEL=buffalo_l 且未检测到 GPU，"
+                      "人脸识别仅约 1 FPS。建议在设置中将模型切换为 buffalo_m")
+
         _yolo_config_cls = YoloConfig
         print("[yolo_config] inject success")
         return True
