@@ -91,3 +91,70 @@ export const faceEmbed = async (frame) => {
   }
   return yolo.post('/api/face_embed', { frame })
 }
+
+// ============ 桌面环境专用功能(存根) ============
+// 以下函数仅在 pywebview EXE 环境下生效，浏览器下所有调用方均已通过
+// isDesktop() 守卫提前返回，此处仅提供存根以通过编译。
+// 如需查看桥接实现,请参考 gateway/http_proxy.py 与 gateway/gui_web.py 中
+// 对应的 Python 端方法。
+
+const _desktopGuard = async () => {
+  if (!hasPywebview()) {
+    throw new Error('该功能仅桌面端可用')
+  }
+}
+
+export const getYoloSettings = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.get_config()
+}
+
+export const saveYoloSettings = async (settings) => {
+  await _desktopGuard()
+  return window.pywebview.api.save_yolo_settings(settings)
+}
+
+export const downloadModel = async (modelName) => {
+  await _desktopGuard()
+  return window.pywebview.api.download_model(modelName)
+}
+
+export const installGpuLib = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.install_gpu_lib()
+}
+
+export const installInsightfaceLib = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.install_insightface()
+}
+
+export const installAllDependencies = async (mode) => {
+  await _desktopGuard()
+  return window.pywebview.api.install_all_deps(mode)
+}
+
+export const selectModelsDir = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.select_models_dir()
+}
+
+export const startYoloService = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.start_yolo_service()
+}
+
+export const stopYoloService = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.stop_yolo_service()
+}
+
+export const getYoloServiceStatus = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.get_yolo_service_status()
+}
+
+export const selectDataDir = async () => {
+  await _desktopGuard()
+  return window.pywebview.api.select_data_dir()
+}

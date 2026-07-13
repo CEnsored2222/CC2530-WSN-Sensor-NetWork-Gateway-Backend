@@ -28,8 +28,19 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173
-    // 桌面应用通过 pywebview js_api 桥接,不需要 dev server proxy
-    // (Web 部署模式如需代理可在此处恢复 proxy 配置)
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true
+      },
+      '/socket.io': {
+        target: 'http://127.0.0.1:5000',
+        changeOrigin: true,
+        ws: true
+      }
+    }
+    // 桌面 pywebview 环境通过 js_api 桥接,不需要 proxy
+    // 浏览器开发环境通过上述 proxy 转发 API/WS 到 Flask
   }
 })
